@@ -80,6 +80,7 @@ class DatabricksDialect(default.DefaultDialect):
     supports_multivalues_insert: bool = True
     supports_native_decimal: bool = True
     supports_sane_rowcount: bool = False
+    supports_comments: bool = True
 
     @classmethod
     def dbapi(cls):
@@ -174,6 +175,7 @@ class DatabricksDialect(default.DefaultDialect):
                 "nullable": bool(col.NULLABLE),
                 "default": col.COLUMN_DEF,
                 "autoincrement": False if col.IS_AUTO_INCREMENT == "NO" else True,
+                'comment': col.REMARKS,
             }
             columns.append(this_column)
 
