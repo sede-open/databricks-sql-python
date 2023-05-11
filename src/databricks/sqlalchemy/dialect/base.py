@@ -15,6 +15,7 @@ class DatabricksIdentifierPreparer(compiler.IdentifierPreparer):
 class DatabricksDDLCompiler(compiler.DDLCompiler):
     def post_create_table(self, table):
         return " USING DELTA"
+
     def visit_set_column_comment(self, create, **kw):
         """
         Example syntax for adding column comment:
