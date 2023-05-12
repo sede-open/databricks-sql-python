@@ -23,7 +23,6 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
         """
         return """ALTER TABLE {0} CHANGE COLUMN {1} COMMENT {2}""".format(
-            'testing.alembic_test1',
             self._format_table_from_column(
                  create, use_schema=True
             ),
