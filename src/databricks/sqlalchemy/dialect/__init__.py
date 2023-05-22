@@ -247,12 +247,13 @@ class DatabricksDialect(default.DefaultDialect):
     def get_table_names(self, connection, schema=None, **kwargs):
         TABLE_NAME = 1
         catalog = "`" + self.catalog + "`"
+        schema = ("`" + schema + "`") or ("`" + self.schema + "`")
 
         with self.get_driver_connection(
             connection
         )._dbapi_connection.dbapi_connection.cursor() as cur:
             sql_str = "SHOW TABLES FROM {}".format(
-                ".".join([catalog, schema or self.schema])
+                ".".join([catalog, schema])
             )
             data = cur.execute(sql_str).fetchall()
             _tables = [i[TABLE_NAME] for i in data]
