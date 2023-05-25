@@ -80,6 +80,7 @@ class DatabricksDialect(default.DefaultDialect):
     supports_multivalues_insert: bool = True
     supports_native_decimal: bool = True
     supports_sane_rowcount: bool = False
+    supports_comments: bool = True
 
     @classmethod
     def dbapi(cls):
@@ -174,6 +175,7 @@ class DatabricksDialect(default.DefaultDialect):
                 "nullable": bool(col.NULLABLE),
                 "default": col.COLUMN_DEF,
                 "autoincrement": False if col.IS_AUTO_INCREMENT == "NO" else True,
+                'comment': col.REMARKS,
             }
             columns.append(this_column)
 
@@ -244,11 +246,14 @@ class DatabricksDialect(default.DefaultDialect):
 
     def get_table_names(self, connection, schema=None, **kwargs):
         TABLE_NAME = 1
+        catalog = "`" + self.catalog + "`"
+        schema = ("`" + schema + "`") or ("`" + self.schema + "`")
+
         with self.get_driver_connection(
             connection
         )._dbapi_connection.dbapi_connection.cursor() as cur:
             sql_str = "SHOW TABLES FROM {}".format(
-                ".".join([self.catalog, schema or self.schema])
+                ".".join([catalog, schema])
             )
             data = cur.execute(sql_str).fetchall()
             _tables = [i[TABLE_NAME] for i in data]
