@@ -287,7 +287,7 @@ class DatabricksDialect(default.DefaultDialect):
         DBR_GT_12_NOT_FOUND_STRING = "TABLE_OR_VIEW_NOT_FOUND"
 
         try:
-            res = connection.execute(f"DESCRIBE TABLE {table_name}")
+            res = connection.execute(f"DESCRIBE TABLE `{schema}`.{table_name}")
             return True
         except DatabaseError as e:
             if DBR_GT_12_NOT_FOUND_STRING in str(
