@@ -1,4 +1,5 @@
 import re
+from sqlalchemy import util, exc
 from sqlalchemy.sql import compiler, sqltypes, ColumnElement
 
 
@@ -64,3 +65,56 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
             name = schema_table_column.split(".")[0] + '.' + name
 
         return name
+
+    def visit_create_table(self, create, **kw):
+        table = create.element
+        preparer = self.preparer
+
+        text = "\nCREATE "
+        if table._prefixes:
+            text += " ".join(table._prefixes) + " "
+
+        # Default to 'IF NOT EXISTS'
+        text += "TABLE IF NOT EXISTS "
+
+        text += preparer.format_table(table) + " "
+
+        create_table_suffix = self.create_table_suffix(table)
+        if create_table_suffix:
+            text += create_table_suffix + " "
+
+        text += "("
+
+        separator = "\n"
+
+        # if only one primary key, specify it along with the column
+        first_pk = False
+        for create_column in create.columns:
+            column = create_column.element
+            try:
+                processed = self.process(
+                    create_column, first_pk=column.primary_key and not first_pk
+                )
+                if processed is not None:
+                    text += separator
+                    separator = ", \n"
+                    text += "\t" + processed
+                if column.primary_key:
+                    first_pk = True
+            except exc.CompileError as ce:
+                util.raise_(
+                    exc.CompileError(
+                        util.u(f"(in table '{table.description}', column '{column.name}'): {ce.args[0]}")
+                    ),
+                    from_=ce,
+                )
+
+        const = self.create_table_constraints(
+            table,
+            _include_foreign_key_constraints=create.include_foreign_key_constraints,  # noqa
+        )
+        if const:
+            text += separator + "\t" + const
+
+        text += f"\n){self.post_create_table(table)}\n\n"
+        return text
