@@ -8,7 +8,12 @@ class DatabricksTypeCompiler(compiler.GenericTypeCompiler):
         return "INT"
 
     def visit_NUMERIC(self, type_):
-        return "DECIMAL"
+        if type_.precision is None:
+            return "DECIMAL"
+        elif type_.scale is None:
+            return "DECIMAL({precision})".format(precision=type_.precision)
+        else:
+            return "DECIMAL({precision}, {scale})".format(precision=type_.precision, scale=type_.scale)
 
     def visit_CHAR(self, type_):
         return "STRING"
