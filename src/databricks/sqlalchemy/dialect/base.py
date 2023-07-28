@@ -120,6 +120,6 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         return text
 
     def visit_drop_table(self, drop, **kw):
-        text = "\nDROP TABLE IF EXISTS"
+        text = "\nDROP TABLE IF EXISTS "
 
         return text + self.preparer.format_table(drop.element)
