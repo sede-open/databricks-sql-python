@@ -118,3 +118,8 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
         text += f"\n){self.post_create_table(table)}\n\n"
         return text
+
+    def visit_drop_table(self, drop, **kw):
+        text = "\nDROP TABLE IF EXISTS "
+
+        return text + self.preparer.format_table(drop.element)
