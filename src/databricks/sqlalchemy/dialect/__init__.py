@@ -245,6 +245,7 @@ class DatabricksDialect(default.DefaultDialect):
         return []
 
     def get_table_names(self, connection, schema=None, **kwargs):
+        # TODO: Change this to ignore views!!!!!!!
         TABLE_NAME = 1
         catalog = "`" + self.catalog + "`"
         schema = ("`" + schema + "`") or ("`" + self.schema + "`")

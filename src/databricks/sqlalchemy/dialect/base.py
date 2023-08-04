@@ -1,6 +1,8 @@
 import re
+from alembic.ddl.base import ColumnComment
 from sqlalchemy import util, exc
 from sqlalchemy.sql import compiler, sqltypes, ColumnElement
+from sqlalchemy.ext.compiler import compiles
 
 
 class DatabricksIdentifierPreparer(compiler.IdentifierPreparer):
@@ -123,3 +125,25 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         text = "\nDROP TABLE IF EXISTS "
 
         return text + self.preparer.format_table(drop.element)
+
+
+@compiles(ColumnComment, "databricks")
+def visit_column_comment(
+    element: ColumnComment, compiler: DatabricksDDLCompiler, **kw
+) -> str:
+    ddl = "ALTER TABLE `{schema}`.{table_name} ALTER COLUMN {column_name} COMMENT {comment}"
+    comment = (
+        compiler.sql_compiler.render_literal_value(
+            element.comment, sqltypes.String()
+        )
+        if element.comment is not None
+        else "NULL"
+    )
+
+    return ddl.format(
+        schema=element.schema,
+        table_name=element.table_name,
+        column_name=element.column_name,
+        comment=comment,
+    )
+
