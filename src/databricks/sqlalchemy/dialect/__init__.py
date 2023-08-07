@@ -245,21 +245,41 @@ class DatabricksDialect(default.DefaultDialect):
         return []
 
     def get_table_names(self, connection, schema=None, **kwargs):
-        # TODO: Change this to ignore views!!!!!!!
         TABLE_NAME = 1
         catalog = "`" + self.catalog + "`"
+        schema_str = schema
         schema = ("`" + schema + "`") or ("`" + self.schema + "`")
 
         with self.get_driver_connection(
             connection
         )._dbapi_connection.dbapi_connection.cursor() as cur:
-            sql_str = "SHOW TABLES FROM {}".format(
-                ".".join([catalog, schema])
+            sql_str = """SELECT table_schema, table_name
+                         FROM information_schema.tables 
+                         WHERE table_schema = '{}'
+                         AND table_type = 'MANAGED';""".format(
+                schema_str
             )
             data = cur.execute(sql_str).fetchall()
             _tables = [i[TABLE_NAME] for i in data]
 
         return _tables
+
+    # TODO: Commented out this until can be deleted after successful tests
+    # def get_table_names(self, connection, schema=None, **kwargs):
+    #     TABLE_NAME = 1
+    #     catalog = "`" + self.catalog + "`"
+    #     schema = ("`" + schema + "`") or ("`" + self.schema + "`")
+    #
+    #     with self.get_driver_connection(
+    #         connection
+    #     )._dbapi_connection.dbapi_connection.cursor() as cur:
+    #         sql_str = "SHOW TABLES FROM {}".format(
+    #             ".".join([catalog, schema])
+    #         )
+    #         data = cur.execute(sql_str).fetchall()
+    #         _tables = [i[TABLE_NAME] for i in data]
+    #
+    #     return _tables
 
     def get_view_names(self, connection, schema=None, **kwargs):
         VIEW_NAME = 1
