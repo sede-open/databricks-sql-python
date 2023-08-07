@@ -328,7 +328,7 @@ class DatabricksDialect(default.DefaultDialect):
             )
             # TODO: Add if scenario for None schema
             data = cur.execute(sql_str).fetchall()
-            _comment = [i[COMMENT] for i in data]
+            _comment = data[0][COMMENT]
 
         return {"text": _comment}
 
