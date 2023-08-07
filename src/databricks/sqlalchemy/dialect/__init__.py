@@ -302,6 +302,36 @@ class DatabricksDialect(default.DefaultDialect):
             else:
                 raise e
 
+    def get_table_comment(self, connection, table_name, schema=None, **kw):
+        r"""Return the "comment" for the table identified by `table_name`.
+
+        Given a string `table_name` and an optional string `schema`, return
+        table comment information as a dictionary with this key:
+
+        returns:
+            dict = {"text": "Table comment here"}
+
+        """
+        COMMENT = 2
+        schema_str = schema
+        table_name_str = table_name
+
+        with self.get_driver_connection(
+            connection
+        )._dbapi_connection.dbapi_connection.cursor() as cur:
+            sql_str = """SELECT table_schema, table_name, comment
+                         FROM information_schema.tables 
+                         WHERE table_schema = '{schema}' 
+                         AND table_name = '{table}';""".format(
+                schema=schema_str,
+                table=table_name_str
+            )
+            # TODO: Add if scenario for None schema
+            data = cur.execute(sql_str).fetchall()
+            _comment = [i[COMMENT] for i in data]
+
+        return {"text": _comment}
+
     @reflection.cache
     def get_schema_names(self, connection, **kw):
         # Equivalent to SHOW DATABASES
