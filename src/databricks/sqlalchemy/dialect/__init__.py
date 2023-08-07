@@ -259,27 +259,11 @@ class DatabricksDialect(default.DefaultDialect):
                          AND table_type = 'MANAGED';""".format(
                 schema_str
             )
+            # TODO: Add if scenario for None schema
             data = cur.execute(sql_str).fetchall()
             _tables = [i[TABLE_NAME] for i in data]
 
         return _tables
-
-    # TODO: Commented out this until can be deleted after successful tests
-    # def get_table_names(self, connection, schema=None, **kwargs):
-    #     TABLE_NAME = 1
-    #     catalog = "`" + self.catalog + "`"
-    #     schema = ("`" + schema + "`") or ("`" + self.schema + "`")
-    #
-    #     with self.get_driver_connection(
-    #         connection
-    #     )._dbapi_connection.dbapi_connection.cursor() as cur:
-    #         sql_str = "SHOW TABLES FROM {}".format(
-    #             ".".join([catalog, schema])
-    #         )
-    #         data = cur.execute(sql_str).fetchall()
-    #         _tables = [i[TABLE_NAME] for i in data]
-    #
-    #     return _tables
 
     def get_view_names(self, connection, schema=None, **kwargs):
         VIEW_NAME = 1
