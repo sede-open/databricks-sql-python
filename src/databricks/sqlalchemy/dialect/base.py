@@ -127,33 +127,33 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
         return text + self.preparer.format_table(drop.element)
 
-    def visit_create_column(self, create, first_pk=False, **kw):
-        column = create.element
-
-        if column.system:
-            return None
-
-        text = self.get_column_specification(column, first_pk=first_pk)
-        const = " ".join(
-            self.process(constraint) for constraint in column.constraints
-        )
-        if const:
-            text += " " + const
-
-        # Code to deal with NOT NULL being unsupported in ADD COLUMNS clause
-        if "NOT NULL" in text:
-            text.replace("NOT NULL", "")
-            text += """;
-            ALTER TABLE {0} ALTER COLUMN {1} SET NOT NULL;
-            """.format(
-                self._format_table_from_column(
-                    create, use_schema=True
-                ),
-                self.preparer.format_column(
-                    create.element, use_table=False
-                )
-            )
-        return text
+    # def visit_create_column(self, create, first_pk=False, **kw):
+    #     column = create.element
+    #
+    #     if column.system:
+    #         return None
+    #
+    #     text = self.get_column_specification(column, first_pk=first_pk)
+    #     const = " ".join(
+    #         self.process(constraint) for constraint in column.constraints
+    #     )
+    #     if const:
+    #         text += " " + const
+    #
+    #     # Code to deal with NOT NULL being unsupported in ADD COLUMNS clause
+    #     if "NOT NULL" in text:
+    #         text.replace("NOT NULL", "")
+    #         text += """;
+    #         ALTER TABLE {0} ALTER COLUMN {1} SET NOT NULL;
+    #         """.format(
+    #             self._format_table_from_column(
+    #                 create, use_schema=True
+    #             ),
+    #             self.preparer.format_column(
+    #                 create.element, use_table=False
+    #             )
+    #         )
+    #     return text
 
 
 @compiles(ColumnComment, "databricks")
