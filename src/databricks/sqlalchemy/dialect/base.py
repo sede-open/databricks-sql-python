@@ -1,8 +1,9 @@
 import re
-from alembic.ddl.base import ColumnComment
+from alembic.ddl.base import ColumnComment, ColumnType
 from sqlalchemy import util, exc
 from sqlalchemy.sql import compiler, sqltypes, ColumnElement
 from sqlalchemy.ext.compiler import compiles
+from sqlalchemy.sql.type_api import TypeEngine
 
 
 class DatabricksIdentifierPreparer(compiler.IdentifierPreparer):
@@ -126,11 +127,38 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
         return text + self.preparer.format_table(drop.element)
 
+    def visit_create_column(self, create, first_pk=False, **kw):
+        column = create.element
+
+        if column.system:
+            return None
+
+        text = self.get_column_specification(column, first_pk=first_pk)
+        const = " ".join(
+            self.process(constraint) for constraint in column.constraints
+        )
+        if const:
+            text += " " + const
+
+        # Code to deal with NOT NULL being unsupported in ADD COLUMNS clause
+        if "NOT NULL" in text:
+            text.replace("NOT NULL", "")
+            text += """;
+            ALTER TABLE {0} ALTER COLUMN {1} SET NOT NULL;
+            """.format(
+                self._format_table_from_column(
+                    create, use_schema=True
+                ),
+                self.preparer.format_column(
+                    create.element, use_table=False
+                )
+            )
+        return text
+
 
 @compiles(ColumnComment, "databricks")
 def visit_column_comment(
-    element: ColumnComment, compiler: DatabricksDDLCompiler, **kw
-) -> str:
+    element: ColumnComment, compiler: DatabricksDDLCompiler, **kw) -> str:
     ddl = "ALTER TABLE `{schema}`.{table_name} ALTER COLUMN {column_name} COMMENT {comment}"
     comment = (
         compiler.sql_compiler.render_literal_value(
@@ -147,3 +175,17 @@ def visit_column_comment(
         comment=comment,
     )
 
+
+# @compiles(ColumnType, "databricks")
+# def visit_column_type(element: ColumnType, compiler: DatabricksDDLCompiler, **kw) -> str:
+#
+#
+#     return "%s %s %s" % (
+#         alter_table(compiler, element.table_name, element.schema),
+#         alter_column(compiler, element.column_name),
+#         "TYPE %s" % format_type(compiler, element.type_),
+#     )
+#
+#
+# def format_type(compiler: DatabricksDDLCompiler, type_: TypeEngine) -> str:
+#     return compiler.dialect.type_compiler.process(type_)
