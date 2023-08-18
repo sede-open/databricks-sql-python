@@ -150,7 +150,7 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
             # print(type(column))
             #print(column)
             # print(dir(column))
-            #print(column.kwargs)
+            print(column.__dict__)
 
             # Check column.kwargs
 
