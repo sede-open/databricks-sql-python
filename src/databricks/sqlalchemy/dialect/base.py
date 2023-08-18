@@ -47,11 +47,12 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
                 print(liquid_options)
 
         # TODO: debugging lines
-        print(type(colspec))
+        # print(type(colspec))
         print(colspec)
         try:
             print(type(column.dialect_options))
             print(column.dialect_options)
+            print('Key inside object: ' + column.dialect_options['cluster'])
         except Exception as e:
             pass
 
