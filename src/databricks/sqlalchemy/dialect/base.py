@@ -92,6 +92,8 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
         # if only one primary key, specify it along with the column
         first_pk = False
+        liquid_clustering = False
+        liquid_cluster_columns = []
         for create_column in create.columns:
             column = create_column.element
             try:
@@ -112,6 +114,12 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
                     from_=ce,
                 )
 
+            if column.liquid_cluster is not None:
+                liquid_cluster = column.liquid_cluster
+                if liquid_cluster:
+                    liquid_clustering = True
+                    liquid_cluster_columns.append(column.name)
+
         const = self.create_table_constraints(
             table,
             _include_foreign_key_constraints=create.include_foreign_key_constraints,  # noqa
@@ -120,7 +128,16 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
             text += separator + "\t" + const
 
         text += f"\n){self.post_create_table(table)}\n\n"
+
+        if liquid_clustering:
+            text += f"\n{self.liquid_cluster_on_table(liquid_cluster_columns)}\n\n"
+
         return text
+
+    def liquid_cluster_on_table(self, liquid_cluster_columns):
+        columns = liquid_cluster_columns
+
+        return """CLUSTER BY ({cols})""".format(cols=', '.join(columns))
 
     def visit_drop_table(self, drop, **kw):
         text = "\nDROP TABLE IF EXISTS "
