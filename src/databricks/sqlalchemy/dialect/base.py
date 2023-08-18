@@ -20,6 +20,37 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
     def post_create_table(self, table):
         return " USING DELTA"
 
+    def get_column_specification(self, column, **kwargs):
+        colspec = (
+            self.preparer.format_column(column)
+            + " "
+            + self.dialect.type_compiler.process(
+                column.type, type_expression=column
+            )
+        )
+
+        # TODO: debugging line
+        print(colspec)
+
+        default = self.get_column_default_string(column)
+        if default is not None:
+            colspec += " DEFAULT " + default
+
+        if column.computed is not None:
+            colspec += " " + self.process(column.computed)
+
+        if (
+            column.identity is not None
+            and self.dialect.supports_identity_columns
+        ):
+            colspec += " " + self.process(column.identity)
+
+        if not column.nullable and (
+            not column.identity or not self.dialect.supports_identity_columns
+        ):
+            colspec += " NOT NULL"
+        return colspec
+
     def visit_set_column_comment(self, create, **kw):
         """
         Example syntax for adding column comment:
@@ -114,10 +145,10 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
                     from_=ce,
                 )
 
-            print(type(create_column))
-            print(create_column)
-            print(type(column))
-            print(column)
+            #print(type(create_column))
+            # print(create_column)
+            # print(type(column))
+            #print(column)
             # print(dir(column))
             print(column.__dict__)
 
