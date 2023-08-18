@@ -180,7 +180,7 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
     def post_create_table(self, table):
         return " USING DELTA"
 
-    def get_column_specification(self, column, **kwargs):
+    def get_column_specification(self, column: Column, **kwargs):    # TODO: replace column with column: Column ?
         colspec = (
             self.preparer.format_column(column)
             + " "
