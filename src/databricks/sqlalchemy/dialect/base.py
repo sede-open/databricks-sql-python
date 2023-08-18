@@ -46,8 +46,14 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
             else:
                 print(liquid_options)
 
-        # TODO: debugging line
+        # TODO: debugging lines
+        print(type(colspec))
         print(colspec)
+        try:
+            print(type(column.dialect_options))
+            print(column.dialect_options)
+        except Exception as e:
+            pass
 
         default = self.get_column_default_string(column)
         if default is not None:
