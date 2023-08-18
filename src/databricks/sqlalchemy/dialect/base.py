@@ -2,9 +2,169 @@ import re
 from alembic.ddl.base import ColumnComment, ColumnType
 from sqlalchemy import util, exc
 from sqlalchemy.sql import compiler, sqltypes, ColumnElement
+from sqlalchemy.sql.schema import Column as DefaultColumn
+from sqlalchemy.sql.schema import ColumnDefault, Sequence, DefaultClause, FetchedValue
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.type_api import TypeEngine
+from sqlalchemy.sql.base import SchemaEventTarget
+from sqlalchemy.sql.elements import quoted_name
 
+
+class Column(DefaultColumn):
+    """Represents a column in a databricks table."""
+
+    __visit_name__ = "column"
+
+    inherit_cache = True
+
+    def __init__(self, *args, **kwargs):
+        name = kwargs.pop("name", None)
+        type_ = kwargs.pop("type_", None)
+        args = list(args)
+        if args:
+            if isinstance(args[0], util.string_types):
+                if name is not None:
+                    raise exc.ArgumentError(
+                        "May not pass name positionally and as a keyword."
+                    )
+                name = args.pop(0)
+        if args:
+            coltype = args[0]
+
+            if hasattr(coltype, "_sqla_type"):
+                if type_ is not None:
+                    raise exc.ArgumentError(
+                        "May not pass type_ positionally and as a keyword."
+                    )
+                type_ = args.pop(0)
+
+        if name is not None:
+            name = quoted_name(name, kwargs.pop("quote", None))
+        elif "quote" in kwargs:
+            raise exc.ArgumentError(
+                "Explicit 'name' is required when " "sending 'quote' argument"
+            )
+
+        super(Column, self).__init__(name, type_)
+        self.key = kwargs.pop("key", name)
+        self.primary_key = primary_key = kwargs.pop("primary_key", False)
+
+        self._user_defined_nullable = udn = kwargs.pop(
+            "nullable", NULL_UNSPECIFIED
+        )
+
+        if udn is not NULL_UNSPECIFIED:
+            self.nullable = udn
+        else:
+            self.nullable = not primary_key
+
+        self.default = kwargs.pop("default", None)
+        self.server_default = kwargs.pop("server_default", None)
+        self.server_onupdate = kwargs.pop("server_onupdate", None)
+
+        # these default to None because .index and .unique is *not*
+        # an informational flag about Column - there can still be an
+        # Index or UniqueConstraint referring to this Column.
+        self.index = kwargs.pop("index", None)
+        self.unique = kwargs.pop("unique", None)
+
+        self.system = kwargs.pop("system", False)
+        self.doc = kwargs.pop("doc", None)
+        self.onupdate = kwargs.pop("onupdate", None)
+        self.autoincrement = kwargs.pop("autoincrement", "auto")
+        self.constraints = set()
+        self.foreign_keys = set()
+        self.comment = kwargs.pop("comment", None)
+        self.computed = None
+        self.identity = None
+        self.liquid_cluster = kwargs.pop("liquid_cluster", None)
+
+        # check if this Column is proxying another column
+        if "_proxies" in kwargs:
+            self._proxies = kwargs.pop("_proxies")
+        # otherwise, add DDL-related events
+        elif isinstance(self.type, SchemaEventTarget):
+            self.type._set_parent_with_dispatch(self)
+
+        if self.default is not None:
+            if isinstance(self.default, (ColumnDefault, Sequence)):
+                args.append(self.default)
+            else:
+                if getattr(self.type, "_warn_on_bytestring", False):
+                    if isinstance(self.default, util.binary_type):
+                        util.warn(
+                            "Unicode column '%s' has non-unicode "
+                            "default value %r specified."
+                            % (self.key, self.default)
+                        )
+                args.append(ColumnDefault(self.default))
+
+        if self.server_default is not None:
+            if isinstance(self.server_default, FetchedValue):
+                args.append(self.server_default._as_for_update(False))
+            else:
+                args.append(DefaultClause(self.server_default))
+
+        if self.onupdate is not None:
+            if isinstance(self.onupdate, (ColumnDefault, Sequence)):
+                args.append(self.onupdate)
+            else:
+                args.append(ColumnDefault(self.onupdate, for_update=True))
+
+        if self.server_onupdate is not None:
+            if isinstance(self.server_onupdate, FetchedValue):
+                args.append(self.server_onupdate._as_for_update(True))
+            else:
+                args.append(
+                    DefaultClause(self.server_onupdate, for_update=True)
+                )
+        self._init_items(*args)
+
+        util.set_creation_order(self)
+
+        if "info" in kwargs:
+            self.info = kwargs.pop("info")
+
+        self._extra_kwargs(**kwargs)
+
+    foreign_keys = None
+    """A collection of all :class:`_schema.ForeignKey` marker objects
+       associated with this :class:`_schema.Column`.
+
+       Each object is a member of a :class:`_schema.Table`-wide
+       :class:`_schema.ForeignKeyConstraint`.
+
+       .. seealso::
+
+           :attr:`_schema.Table.foreign_keys`
+
+    """
+
+    index = None
+    """The value of the :paramref:`_schema.Column.index` parameter.
+
+       Does not indicate if this :class:`_schema.Column` is actually indexed
+       or not; use :attr:`_schema.Table.indexes`.
+
+       .. seealso::
+
+           :attr:`_schema.Table.indexes`
+    """
+
+    unique = None
+    """The value of the :paramref:`_schema.Column.unique` parameter.
+
+       Does not indicate if this :class:`_schema.Column` is actually subject to
+       a unique constraint or not; use :attr:`_schema.Table.indexes` and
+       :attr:`_schema.Table.constraints`.
+
+       .. seealso::
+
+           :attr:`_schema.Table.indexes`
+
+           :attr:`_schema.Table.constraints`.
+
+    """
 
 class DatabricksIdentifierPreparer(compiler.IdentifierPreparer):
     # SparkSQL identifier specification:
