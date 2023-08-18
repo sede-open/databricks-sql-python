@@ -52,8 +52,8 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         try:
             print(type(column.dialect_options))
             print(column.dialect_options)
-            print(type(column.dialect_options.__getitem__('cluster')))
-            print('Key inside object: ' + column.dialect_options.__getitem__('cluster'))
+            print(type(column.dialect_options['liquid'].__getitem__('cluster')))
+            print('Key inside object: ' + column.dialect_options['liquid'].__getitem__('cluster'))
         except Exception as e:
             pass
 
