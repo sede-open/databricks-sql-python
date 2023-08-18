@@ -118,6 +118,7 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
             print(create_column)
             print(type(column))
             print(column)
+            print(dir(column))
 
             # if column.liquid_cluster is not None:
             #     liquid_cluster = column.liquid_cluster
