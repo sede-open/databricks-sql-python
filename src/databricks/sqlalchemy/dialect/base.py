@@ -114,11 +114,16 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
                     from_=ce,
                 )
 
-            if column.liquid_cluster is not None:
-                liquid_cluster = column.liquid_cluster
-                if liquid_cluster:
-                    liquid_clustering = True
-                    liquid_cluster_columns.append(column.name)
+            print(type(create_column))
+            print(create_column)
+            print(type(column))
+            print(column)
+
+            # if column.liquid_cluster is not None:
+            #     liquid_cluster = column.liquid_cluster
+            #     if liquid_cluster:
+            #         liquid_clustering = True
+            #         liquid_cluster_columns.append(column.name)
 
         const = self.create_table_constraints(
             table,
