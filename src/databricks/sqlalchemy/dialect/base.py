@@ -37,6 +37,15 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
             )
         )
 
+        # Consider the 'liquid_cluster' attribute
+        if column.dialect_options and 'liquid' in column.dialect_options:
+            liquid_options = column.dialect_options['liquid']
+            if 'liquid_cluster' in liquid_options and liquid_options['liquid_cluster']:
+                colspec += " LIQUID_CLUSTER"
+            # TODO this else statement is a debugging line
+            else:
+                print(liquid_options)
+
         # TODO: debugging line
         print(colspec)
 
