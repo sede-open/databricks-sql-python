@@ -182,11 +182,14 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
             # TODO: Apply Liquid Cluster Logic - column.dialect_options['liquid'].__getitem__('cluster_key')
 
-            if column.dialect_options['databricks'] is not None:
-                cluster_on = column.dialect_options['databricks'].__getitem__('cluster_key')
-                if cluster_on:
-                    liquid_clustering = True
-                    liquid_cluster_columns.append(column.name)
+            if len(column.dialect_options) > 0:
+                try:
+                    cluster_on = column.dialect_options['databricks'].__getitem__('cluster_key')
+                    if cluster_on:
+                        liquid_clustering = True
+                        liquid_cluster_columns.append(column.name)
+                except KeyError:
+                    pass
 
         const = self.create_table_constraints(
             table,
