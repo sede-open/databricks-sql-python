@@ -182,7 +182,7 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
             # TODO: Apply Liquid Cluster Logic - column.dialect_options['liquid'].__getitem__('cluster_key')
 
-            if len(column.dialect_options) > 0:
+            if 'databricks' in column.dialect_options:
                 try:
                     cluster_on = column.dialect_options['databricks'].__getitem__('cluster_key')
                     if cluster_on:
