@@ -37,14 +37,14 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
             )
         )
 
-        # Consider the 'liquid_cluster' attribute
-        if column.dialect_options and 'liquid' in column.dialect_options:
-            liquid_options = column.dialect_options['liquid']
-            if 'liquid_cluster' in liquid_options and liquid_options['liquid_cluster']:
-                colspec += " LIQUID_CLUSTER"
-            # TODO this else statement is a debugging line
-            else:
-                print(liquid_options)
+        # # Consider the 'liquid_cluster' attribute
+        # if column.dialect_options and 'liquid' in column.dialect_options:
+        #     liquid_options = column.dialect_options['liquid']
+        #     if 'liquid_cluster' in liquid_options and liquid_options['liquid_cluster']:
+        #         colspec += " LIQUID_CLUSTER"
+        #     # TODO this else statement is a debugging line
+        #     else:
+        #         print(liquid_options)
 
         # TODO: debugging lines
         # print(type(colspec))
@@ -52,9 +52,9 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         try:
             print(type(column.dialect_options))
             print(column.dialect_options)
-            print(type(column.dialect_options['liquid'].__getitem__('cluster_key')))
+            print(type(column.dialect_options['databricks'].__getitem__('cluster_key')))
             # TODO: THIS WORKS!!!!!
-            print(column.dialect_options['liquid'].__getitem__('cluster_key'))
+            print(column.dialect_options['databricks'].__getitem__('cluster_key'))
         except Exception as e:
             pass
 
@@ -182,8 +182,8 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
             # TODO: Apply Liquid Cluster Logic - column.dialect_options['liquid'].__getitem__('cluster_key')
 
-            if column.dialect_options['liquid'] is not None:
-                cluster_on = column.dialect_options['liquid'].__getitem__('cluster_key')
+            if column.dialect_options['databricks'] is not None:
+                cluster_on = column.dialect_options['databricks'].__getitem__('cluster_key')
                 if cluster_on:
                     liquid_clustering = True
                     liquid_cluster_columns.append(column.name)
