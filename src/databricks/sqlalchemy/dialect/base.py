@@ -7,13 +7,6 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.type_api import TypeEngine
 
 
-# class DatabricksColumn(DefaultColumn):
-#     """Represents a column in a databricks table."""
-#     def __init__(self, *args, liquid_cluster=False, **kwargs):
-#         self.liquid_cluster = liquid_cluster
-#         super().__init__(*args, **kwargs)
-
-
 class DatabricksIdentifierPreparer(compiler.IdentifierPreparer):
     # SparkSQL identifier specification:
     # ref: https://spark.apache.org/docs/latest/sql-ref-identifier.html
@@ -27,34 +20,6 @@ class DatabricksIdentifierPreparer(compiler.IdentifierPreparer):
 class DatabricksDDLCompiler(compiler.DDLCompiler):
     def post_create_table(self, table):
         return " USING DELTA"
-
-    # def get_column_specification(self, column: DatabricksColumn, **kwargs):
-    #     colspec = (
-    #         self.preparer.format_column(column)
-    #         + " "
-    #         + self.dialect.type_compiler.process(
-    #             column.type, type_expression=column
-    #         )
-    #     )
-    #
-    #     default = self.get_column_default_string(column)
-    #     if default is not None:
-    #         colspec += " DEFAULT " + default
-    #
-    #     if column.computed is not None:
-    #         colspec += " " + self.process(column.computed)
-    #
-    #     if (
-    #         column.identity is not None
-    #         and self.dialect.supports_identity_columns
-    #     ):
-    #         colspec += " " + self.process(column.identity)
-    #
-    #     if not column.nullable and (
-    #         not column.identity or not self.dialect.supports_identity_columns
-    #     ):
-    #         colspec += " NOT NULL"
-    #     return colspec
 
     def visit_set_column_comment(self, create, **kw):
         """
@@ -150,7 +115,7 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
                     from_=ce,
                 )
 
-            # Check and apply liquid clustering
+            # Check for and apply liquid clustering
             if 'databricks' in column.dialect_options:
                 try:
                     cluster_on = column.dialect_options['databricks'].__getitem__('cluster_key')
@@ -184,34 +149,6 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
         return text + self.preparer.format_table(drop.element)
 
-    # def visit_create_column(self, create, first_pk=False, **kw):
-    #     column = create.element
-
-    #     if column.system:
-    #         return None
-
-    #     text = self.get_column_specification(column, first_pk=first_pk)
-    #     const = " ".join(
-    #         self.process(constraint) for constraint in column.constraints
-    #     )
-    #     if const:
-    #         text += " " + const
-
-    #     # Code to deal with NOT NULL being unsupported in ADD COLUMNS clause
-    #     if "NOT NULL" in text:
-    #         text.replace("NOT NULL", "")
-    #         text += """;
-    #         ALTER TABLE {0} ALTER COLUMN {1} SET NOT NULL;
-    #         """.format(
-    #             self._format_table_from_column(
-    #                 create, use_schema=True
-    #             ),
-    #             self.preparer.format_column(
-    #                 create.element, use_table=False
-    #             )
-    #         )
-    #     return text
-
 
 @compiles(ColumnComment, "databricks")
 def visit_column_comment(
@@ -231,18 +168,3 @@ def visit_column_comment(
         column_name=element.column_name,
         comment=comment,
     )
-
-
-# @compiles(ColumnType, "databricks")
-# def visit_column_type(element: ColumnType, compiler: DatabricksDDLCompiler, **kw) -> str:
-#
-#
-#     return "%s %s %s" % (
-#         alter_table(compiler, element.table_name, element.schema),
-#         alter_column(compiler, element.column_name),
-#         "TYPE %s" % format_type(compiler, element.type_),
-#     )
-#
-#
-# def format_type(compiler: DatabricksDDLCompiler, type_: TypeEngine) -> str:
-#     return compiler.dialect.type_compiler.process(type_)
