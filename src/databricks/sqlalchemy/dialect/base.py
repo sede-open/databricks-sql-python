@@ -7,11 +7,11 @@ from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.type_api import TypeEngine
 
 
-class DatabricksColumn(DefaultColumn):
-    """Represents a column in a databricks table."""
-    def __init__(self, *args, liquid_cluster=False, **kwargs):
-        self.liquid_cluster = liquid_cluster
-        super().__init__(*args, **kwargs)
+# class DatabricksColumn(DefaultColumn):
+#     """Represents a column in a databricks table."""
+#     def __init__(self, *args, liquid_cluster=False, **kwargs):
+#         self.liquid_cluster = liquid_cluster
+#         super().__init__(*args, **kwargs)
 
 
 class DatabricksIdentifierPreparer(compiler.IdentifierPreparer):
@@ -28,54 +28,33 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
     def post_create_table(self, table):
         return " USING DELTA"
 
-    def get_column_specification(self, column: DatabricksColumn, **kwargs):    # TODO: replace column with column: Column ?
-        colspec = (
-            self.preparer.format_column(column)
-            + " "
-            + self.dialect.type_compiler.process(
-                column.type, type_expression=column
-            )
-        )
-
-        # # Consider the 'liquid_cluster' attribute
-        # if column.dialect_options and 'liquid' in column.dialect_options:
-        #     liquid_options = column.dialect_options['liquid']
-        #     if 'liquid_cluster' in liquid_options and liquid_options['liquid_cluster']:
-        #         colspec += " LIQUID_CLUSTER"
-        #     # TODO this else statement is a debugging line
-        #     else:
-        #         print(liquid_options)
-
-        # TODO: debugging lines
-        # print(type(colspec))
-        print(colspec)
-        try:
-            print(type(column.dialect_options))
-            print(column.dialect_options)
-            print(type(column.dialect_options['databricks'].__getitem__('cluster_key')))
-            # TODO: THIS WORKS!!!!!
-            print(column.dialect_options['databricks'].__getitem__('cluster_key'))
-        except Exception as e:
-            pass
-
-        default = self.get_column_default_string(column)
-        if default is not None:
-            colspec += " DEFAULT " + default
-
-        if column.computed is not None:
-            colspec += " " + self.process(column.computed)
-
-        if (
-            column.identity is not None
-            and self.dialect.supports_identity_columns
-        ):
-            colspec += " " + self.process(column.identity)
-
-        if not column.nullable and (
-            not column.identity or not self.dialect.supports_identity_columns
-        ):
-            colspec += " NOT NULL"
-        return colspec
+    # def get_column_specification(self, column: DatabricksColumn, **kwargs):
+    #     colspec = (
+    #         self.preparer.format_column(column)
+    #         + " "
+    #         + self.dialect.type_compiler.process(
+    #             column.type, type_expression=column
+    #         )
+    #     )
+    #
+    #     default = self.get_column_default_string(column)
+    #     if default is not None:
+    #         colspec += " DEFAULT " + default
+    #
+    #     if column.computed is not None:
+    #         colspec += " " + self.process(column.computed)
+    #
+    #     if (
+    #         column.identity is not None
+    #         and self.dialect.supports_identity_columns
+    #     ):
+    #         colspec += " " + self.process(column.identity)
+    #
+    #     if not column.nullable and (
+    #         not column.identity or not self.dialect.supports_identity_columns
+    #     ):
+    #         colspec += " NOT NULL"
+    #     return colspec
 
     def visit_set_column_comment(self, create, **kw):
         """
@@ -171,17 +150,7 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
                     from_=ce,
                 )
 
-            #print(type(create_column))
-            # print(create_column)
-            # print(type(column))
-            #print(column)
-            # print(dir(column))
-            # print(column.__dict__)
-
-            # Check column.kwargs
-
-            # TODO: Apply Liquid Cluster Logic - column.dialect_options['liquid'].__getitem__('cluster_key')
-
+            # Check and apply liquid clustering
             if 'databricks' in column.dialect_options:
                 try:
                     cluster_on = column.dialect_options['databricks'].__getitem__('cluster_key')
@@ -198,10 +167,10 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         if const:
             text += separator + "\t" + const
 
-        text += f"\n){self.post_create_table(table)}"
+        text += f"\n){self.post_create_table(table)}\n"
 
         if liquid_clustering:
-            text += f"\n{self.liquid_cluster_on_table(liquid_cluster_columns)}\n\n"
+            text += f"{self.liquid_cluster_on_table(liquid_cluster_columns)}\n\n"
 
         return text
 

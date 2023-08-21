@@ -14,8 +14,7 @@ from databricks import sql
 
 from databricks.sqlalchemy.dialect.base import (
     DatabricksDDLCompiler,
-    DatabricksIdentifierPreparer,
-    DatabricksColumn
+    DatabricksIdentifierPreparer
 )
 from databricks.sqlalchemy.dialect.compiler import DatabricksTypeCompiler
 
@@ -339,14 +338,6 @@ class DatabricksDialect(default.DefaultDialect):
 
         # TODO: replace with call to cursor.schemas() once its performance matches raw SQL
         return [row[0] for row in connection.execute("SHOW SCHEMAS")]
-
-
-# TODO: another test, to be removed if unsuccessful
-def _render_column(self, column: DatabricksColumn, compiler: DatabricksDDLCompiler, **kwargs):
-    rendered = super().render_column(column, compiler, **kwargs)
-    if hasattr(column, 'liquid_cluster') and column.liquid_cluster:
-        rendered += " LIQUID_CLUSTER"
-    return rendered
 
 
 @event.listens_for(Engine, "do_connect")
