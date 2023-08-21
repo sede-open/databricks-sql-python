@@ -52,9 +52,9 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         try:
             print(type(column.dialect_options))
             print(column.dialect_options)
-            print(type(column.dialect_options['liquid'].__getitem__('cluster')))
-            # TODO: BLOODY BINGO - YOU'VE GOT IT SON!!!!!!!
-            print(column.dialect_options['liquid'].__getitem__('cluster'))
+            print(type(column.dialect_options['liquid'].__getitem__('cluster_key')))
+            # TODO: THIS WORKS!!!!!
+            print(column.dialect_options['liquid'].__getitem__('cluster_key'))
         except Exception as e:
             pass
 
@@ -176,15 +176,17 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
             # print(type(column))
             #print(column)
             # print(dir(column))
-            print(column.__dict__)
+            # print(column.__dict__)
 
             # Check column.kwargs
 
-            # if column.liquid_cluster is not None:
-            #     liquid_cluster = column.liquid_cluster
-            #     if liquid_cluster:
-            #         liquid_clustering = True
-            #         liquid_cluster_columns.append(column.name)
+            # TODO: Apply Liquid Cluster Logic - column.dialect_options['liquid'].__getitem__('cluster_key')
+
+            if column.dialect_options['liquid'] is not None:
+                cluster_on = column.dialect_options['liquid'].__getitem__('cluster_key')
+                if cluster_on:
+                    liquid_clustering = True
+                    liquid_cluster_columns.append(column.name)
 
         const = self.create_table_constraints(
             table,
