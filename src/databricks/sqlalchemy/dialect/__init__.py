@@ -14,7 +14,7 @@ from databricks import sql
 
 from databricks.sqlalchemy.dialect.base import (
     DatabricksDDLCompiler,
-    DatabricksIdentifierPreparer,
+    DatabricksIdentifierPreparer
 )
 from databricks.sqlalchemy.dialect.compiler import DatabricksTypeCompiler
 

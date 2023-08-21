@@ -2,6 +2,7 @@ import re
 from alembic.ddl.base import ColumnComment, ColumnType
 from sqlalchemy import util, exc
 from sqlalchemy.sql import compiler, sqltypes, ColumnElement
+from sqlalchemy.sql.schema import Column as DefaultColumn
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.sql.type_api import TypeEngine
 
@@ -92,6 +93,8 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
         # if only one primary key, specify it along with the column
         first_pk = False
+        liquid_clustering = False
+        liquid_cluster_columns = []
         for create_column in create.columns:
             column = create_column.element
             try:
@@ -112,6 +115,16 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
                     from_=ce,
                 )
 
+            # Check for and apply liquid clustering
+            if 'databricks' in column.dialect_options:
+                try:
+                    cluster_on = column.dialect_options['databricks'].__getitem__('cluster_key')
+                    if cluster_on:
+                        liquid_clustering = True
+                        liquid_cluster_columns.append(column.name)
+                except KeyError:
+                    pass
+
         const = self.create_table_constraints(
             table,
             _include_foreign_key_constraints=create.include_foreign_key_constraints,  # noqa
@@ -119,41 +132,22 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         if const:
             text += separator + "\t" + const
 
-        text += f"\n){self.post_create_table(table)}\n\n"
+        text += f"\n){self.post_create_table(table)}\n"
+
+        if liquid_clustering:
+            text += f"{self.liquid_cluster_on_table(liquid_cluster_columns)}\n\n"
+
         return text
+
+    def liquid_cluster_on_table(self, liquid_cluster_columns):
+        columns = liquid_cluster_columns
+
+        return """CLUSTER BY ({cols})""".format(cols=', '.join(columns))
 
     def visit_drop_table(self, drop, **kw):
         text = "\nDROP TABLE IF EXISTS "
 
         return text + self.preparer.format_table(drop.element)
-
-    # def visit_create_column(self, create, first_pk=False, **kw):
-    #     column = create.element
-
-    #     if column.system:
-    #         return None
-
-    #     text = self.get_column_specification(column, first_pk=first_pk)
-    #     const = " ".join(
-    #         self.process(constraint) for constraint in column.constraints
-    #     )
-    #     if const:
-    #         text += " " + const
-
-    #     # Code to deal with NOT NULL being unsupported in ADD COLUMNS clause
-    #     if "NOT NULL" in text:
-    #         text.replace("NOT NULL", "")
-    #         text += """;
-    #         ALTER TABLE {0} ALTER COLUMN {1} SET NOT NULL;
-    #         """.format(
-    #             self._format_table_from_column(
-    #                 create, use_schema=True
-    #             ),
-    #             self.preparer.format_column(
-    #                 create.element, use_table=False
-    #             )
-    #         )
-    #     return text
 
 
 @compiles(ColumnComment, "databricks")
@@ -174,18 +168,3 @@ def visit_column_comment(
         column_name=element.column_name,
         comment=comment,
     )
-
-
-# @compiles(ColumnType, "databricks")
-# def visit_column_type(element: ColumnType, compiler: DatabricksDDLCompiler, **kw) -> str:
-#
-#
-#     return "%s %s %s" % (
-#         alter_table(compiler, element.table_name, element.schema),
-#         alter_column(compiler, element.column_name),
-#         "TYPE %s" % format_type(compiler, element.type_),
-#     )
-#
-#
-# def format_type(compiler: DatabricksDDLCompiler, type_: TypeEngine) -> str:
-#     return compiler.dialect.type_compiler.process(type_)
