@@ -198,7 +198,7 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         if const:
             text += separator + "\t" + const
 
-        text += f"\n){self.post_create_table(table)}\n\n"
+        text += f"\n){self.post_create_table(table)}"
 
         if liquid_clustering:
             text += f"\n{self.liquid_cluster_on_table(liquid_cluster_columns)}\n\n"
