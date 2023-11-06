@@ -8,6 +8,7 @@ from sqlalchemy import types, processors, event
 from sqlalchemy.engine import default, Engine
 from sqlalchemy.exc import DatabaseError
 from sqlalchemy.engine import reflection
+from sqlalchemy.sql import sqltypes
 
 from databricks import sql
 
@@ -39,6 +40,26 @@ class DatabricksDecimal(types.TypeDecorator):
             return decimal.Decimal(value)
         else:
             return None
+
+
+class DatabricksStruct(sqltypes.JSON, types.TypeDecorator):
+    """Represent the Databricks JSON/Struct type."""
+    # TODO: Still in the testing phase
+
+    __visit_name__ = "JSON"
+
+    impl = types.JSON
+
+    def __init__(self, fields=None, none_as_null=False):
+
+        self.none_as_null = none_as_null
+        self.fields = fields
+
+    def process_result_value(self, value, dialect):
+        return value
+
+    def adapt(self, impltype, **kwargs):
+        return self.impl
 
 
 class DatabricksTimestamp(types.TypeDecorator):
