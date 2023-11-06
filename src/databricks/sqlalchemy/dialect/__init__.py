@@ -42,7 +42,7 @@ class DatabricksDecimal(types.TypeDecorator):
             return None
 
 
-class DatabricksStruct(sqltypes.JSON, types.TypeDecorator):
+class JSON(sqltypes.JSON, types.TypeDecorator):
     """Represent the Databricks JSON/Struct type."""
     # TODO: Still in the testing phase
 
