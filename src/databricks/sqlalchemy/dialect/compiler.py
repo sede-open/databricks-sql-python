@@ -41,3 +41,6 @@ class DatabricksTypeCompiler(compiler.GenericTypeCompiler):
 
     def visit_DATETIME(self, type_):
         return "TIMESTAMP"
+
+    def visit_JSON(self, type_):
+        return "STRUCT"
