@@ -277,7 +277,8 @@ class DatabricksDialect(default.DefaultDialect):
             sql_str = """SELECT table_schema, table_name
                          FROM information_schema.tables 
                          WHERE table_schema = '{}'
-                         AND table_type = 'MANAGED';""".format(
+                         AND table_type = 'MANAGED'
+                         AND table_name NOT LIKE '%_mvt';""".format(
                 schema_str
             )
             # TODO: Add if scenario for None schema
