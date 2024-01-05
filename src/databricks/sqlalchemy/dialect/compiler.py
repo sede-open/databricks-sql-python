@@ -46,4 +46,4 @@ class DatabricksTypeCompiler(compiler.GenericTypeCompiler):
         return "STRUCT"
 
     def visit_ARRAY(self, type_):
-        return "ARRAY {type}".format(type=type_.item_type)
+        return "ARRAY({type})".format(type=type_.item_type)
