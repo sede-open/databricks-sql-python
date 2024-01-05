@@ -25,6 +25,7 @@ except ImportError:
     pass
 else:
     from alembic.ddl import DefaultImpl
+    from alembic.autogenerate import render
 
     class DatabricksImpl(DefaultImpl):
         __dialect__ = "databricks"
