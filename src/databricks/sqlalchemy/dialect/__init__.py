@@ -26,14 +26,8 @@ else:
     from alembic.ddl import DefaultImpl
     from alembic.autogenerate import render
 
-    # TODO:
     class DatabricksImpl(DefaultImpl):
         __dialect__ = "databricks"
-
-        def _render_ARRAY_type(self, type_, autogen_context):
-            return render._render_type_w_subtype(
-                type_, autogen_context, "item_type", r"(.+?\()"
-            )
 
 
 class DatabricksDecimal(types.TypeDecorator):
