@@ -149,6 +149,12 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
         return text + self.preparer.format_table(drop.element)
 
+    # TODO: Testing code
+    # def _render_ARRAY_type(self, type_, autogen_context):
+    #     return render._render_type_w_subtype(
+    #         type_, autogen_context, "item_type", r"(.+?\()"
+    #     )
+
 
 @compiles(ColumnComment, "databricks")
 def visit_column_comment(

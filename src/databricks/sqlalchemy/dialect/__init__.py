@@ -4,6 +4,7 @@
 import decimal, re, datetime
 from dateutil.parser import parse
 
+from alembic.autogenerate import render
 from sqlalchemy import types, processors, event
 from sqlalchemy.engine import default, Engine
 from sqlalchemy.exc import DatabaseError
@@ -25,8 +26,14 @@ except ImportError:
 else:
     from alembic.ddl import DefaultImpl
 
+    #
     class DatabricksImpl(DefaultImpl):
         __dialect__ = "databricks"
+
+        def _render_ARRAY_type(self, type_, autogen_context):
+            return render._render_type_w_subtype(
+                type_, autogen_context, "item_type", r"(.+?\()"
+            )
 
 
 class DatabricksDecimal(types.TypeDecorator):
