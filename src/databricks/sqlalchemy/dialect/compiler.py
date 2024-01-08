@@ -44,3 +44,9 @@ class DatabricksTypeCompiler(compiler.GenericTypeCompiler):
 
     def visit_JSON(self, type_):
         return "STRUCT"
+
+    def visit_ARRAY(self, type_):
+        if type_.item_type == 'VARCHAR':
+            return "ARRAY<STRING>"
+        else:
+            return "ARRAY<{type}>".format(type=type_.item_type)
