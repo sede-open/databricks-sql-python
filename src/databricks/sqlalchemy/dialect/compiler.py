@@ -47,7 +47,7 @@ class DatabricksTypeCompiler(compiler.GenericTypeCompiler):
 
     def visit_ARRAY(self, type_):
         element_type = type_.item_type
-        print(element_type)
+        print(type(element_type))
         if element_type == "VARCHAR":
             print("String type if statement hit")
             return "ARRAY<STRING>"
