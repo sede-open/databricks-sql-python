@@ -4,8 +4,7 @@ from sqlalchemy.sql import compiler
 class DatabricksTypeCompiler(compiler.GenericTypeCompiler):
     """Originally forked from pyhive"""
 
-    def visit_INTEGER(self, type_, **kwargs):
-        print(kwargs)
+    def visit_INTEGER(self, type_):
         return "INT"
 
     def visit_NUMERIC(self, type_):

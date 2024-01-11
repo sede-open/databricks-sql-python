@@ -97,20 +97,19 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         liquid_cluster_columns = []
         for create_column in create.columns:
             column = create_column.element
-            # column is of type <class 'sqlalchemy.sql.schema.Column'>
-            print(column.autoincrement)
-            # Add somewhere 'if column.autoincrement:' And append correct syntax
             try:
                 processed = self.process(
                     create_column, first_pk=column.primary_key and not first_pk
                 )
-                print(processed)
+                if column.autoincrement:   # If doesn't work try 'is True' and == 'True'
+                    processed = "`".join(processed.split("`")[:-1]) + "`" + "BIGINT GENERATED ALWAYS AS IDENTITY"
                 if processed is not None:
                     text += separator
                     separator = ", \n"
                     text += "\t" + processed
                 if column.primary_key:
                     first_pk = True
+                print(processed)
             except exc.CompileError as ce:
                 util.raise_(
                     exc.CompileError(
