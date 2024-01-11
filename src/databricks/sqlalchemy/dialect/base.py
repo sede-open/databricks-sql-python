@@ -102,7 +102,7 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
                     create_column, first_pk=column.primary_key and not first_pk
                 )
                 if column.autoincrement is True:   # If doesn't work try 'is True' and == 'True'
-                    processed = "`".join(processed.split("`")[:-1]) + "`" + "BIGINT GENERATED ALWAYS AS IDENTITY"
+                    processed = "`".join(processed.split("`")[:-1]) + "` " + "BIGINT GENERATED ALWAYS AS IDENTITY"
                 if processed is not None:
                     text += separator
                     separator = ", \n"
