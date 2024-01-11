@@ -97,8 +97,8 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         liquid_cluster_columns = []
         for create_column in create.columns:
             column = create_column.element
-            print(type(column))
-            print(column)
+            # column is of type <class 'sqlalchemy.sql.schema.Column'>
+            print(column.autoincrement)
             try:
                 processed = self.process(
                     create_column, first_pk=column.primary_key and not first_pk
