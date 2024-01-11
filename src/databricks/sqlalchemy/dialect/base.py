@@ -99,10 +99,12 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
             column = create_column.element
             # column is of type <class 'sqlalchemy.sql.schema.Column'>
             print(column.autoincrement)
+            # Add somewhere 'if column.autoincrement:' And append correct syntax
             try:
                 processed = self.process(
                     create_column, first_pk=column.primary_key and not first_pk
                 )
+                print(processed)
                 if processed is not None:
                     text += separator
                     separator = ", \n"
