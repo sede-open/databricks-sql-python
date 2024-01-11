@@ -109,7 +109,6 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
                     text += "\t" + processed
                 if column.primary_key:
                     first_pk = True
-                print(processed)
             except exc.CompileError as ce:
                 util.raise_(
                     exc.CompileError(
