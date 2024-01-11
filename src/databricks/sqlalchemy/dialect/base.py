@@ -98,6 +98,7 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         for create_column in create.columns:
             column = create_column.element
             print(type(column))
+            print(column)
             try:
                 processed = self.process(
                     create_column, first_pk=column.primary_key and not first_pk
