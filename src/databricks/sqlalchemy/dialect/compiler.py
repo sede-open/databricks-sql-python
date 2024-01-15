@@ -7,6 +7,9 @@ class DatabricksTypeCompiler(compiler.GenericTypeCompiler):
     def visit_INTEGER(self, type_):
         return "INT"
 
+    def visit_BIGINT(self, type_):
+        return "BIGINT"
+
     def visit_NUMERIC(self, type_):
         if type_.precision is None:
             return "DECIMAL"
