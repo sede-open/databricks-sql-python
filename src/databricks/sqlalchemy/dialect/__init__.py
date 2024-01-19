@@ -277,10 +277,12 @@ class DatabricksDialect(default.DefaultDialect):
                 "name": name,
                 "constrained_columns": col_name,
                 "referred_schema": con_schema,
-                "referred_table": table,
+                "referred_table": "charger_evse",   # TODO: Replace, hardcode for testing
                 "referred_columns": col_name,
             }
             fkeys.append(fkey_d)
+
+        print(fkeys)
 
         return fkeys
 
