@@ -101,8 +101,6 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
                 processed = self.process(
                     create_column, first_pk=column.primary_key and not first_pk
                 )
-                print(type(processed))
-                print(processed)
                 # Add backquotes to column names if there are none - assumes no spaces in column name
                 if '`' not in processed:
                     processed = '`' + "".join(processed.split(" ")[0]) + "` " + " ".join(processed.split(" ")[1:])
