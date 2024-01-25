@@ -282,8 +282,6 @@ class DatabricksDialect(default.DefaultDialect):
             }
             fkeys.append(fkey_d)
 
-        print(fkeys)
-
         return fkeys
 
     def get_indexes(self, connection, table_name, schema=None, **kw):
