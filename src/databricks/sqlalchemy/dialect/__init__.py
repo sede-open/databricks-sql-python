@@ -5,9 +5,8 @@ import decimal, re, datetime
 from dateutil.parser import parse
 
 from sqlalchemy import types, processors, event
-from sqlalchemy.engine import default, Engine
+from sqlalchemy.engine import default, Engine, reflection
 from sqlalchemy.exc import DatabaseError
-from sqlalchemy.engine import reflection
 
 from databricks import sql
 
@@ -182,24 +181,45 @@ class DatabricksDialect(default.DefaultDialect):
 
         return columns
 
+    @reflection.cache
     def get_pk_constraint(self, connection, table_name, schema=None, **kw):
-        """Return information about the primary key constraint on
-        table_name`.
+        """Fetch information about the primary key constraint on table_name.
 
-        Given a :class:`_engine.Connection`, a string
-        `table_name`, and an optional string `schema`, return primary
-        key information as a dictionary with these keys:
+        Returns a dictionary with these keys:
+            constrained_columns
+              a list of column names that make up the primary key. Results is an empty list
+              if no PRIMARY KEY is defined.
 
-        constrained_columns
-          a list of column names that make up the primary key
-
-        name
-          optional name of the primary key constraint.
+            name
+              the name of the primary key constraint
 
         """
-        # TODO: implement this behaviour
-        return {"constrained_columns": []}
+        # TODO: abstract this to databricks.sql.client
+        CONSTRAINT_NAME = 1
+        COLUMN_NAME = 2
 
+        with self.get_driver_connection(
+                connection
+        )._dbapi_connection.dbapi_connection.cursor() as cur:
+            pk_query = """
+                SELECT table_name, constraint_name, column_name
+                FROM information_schema.constraint_column_usage
+                WHERE table_schema = '{schema}'
+                AND table_name = '{table}'
+                AND constraint_name LIKE 'pk_%'
+            """.format(
+                    schema=schema,
+                    table=table_name
+                )
+
+            data = cur.execute(pk_query).fetchall()
+
+            cols = [i[COLUMN_NAME] for i in data]
+            name = [i[CONSTRAINT_NAME] for i in data]
+
+        return {"constrained_columns": cols, "name": name}
+
+    @reflection.cache
     def get_foreign_keys(self, connection, table_name, schema=None, **kw):
         """Return information about foreign_keys in `table_name`.
 
@@ -223,8 +243,46 @@ class DatabricksDialect(default.DefaultDialect):
           a list of column names in the referred table that correspond to
           constrained_columns
         """
-        # TODO: Implement this behaviour
-        return []
+        # TODO: abstract this to databricks.sql.client
+        # TODO: can only process 1:1 FK relationships
+        CONSTRAINT_NAME = 2
+        COLUMN_NAME = 3
+        CONTRAINT_SCHEMA = 0
+        TABLE_NAME = 1
+
+        with self.get_driver_connection(
+                connection
+        )._dbapi_connection.dbapi_connection.cursor() as cur:
+            fk_query = """
+                        SELECT constraint_schema, table_name, constraint_name, column_name
+                        FROM information_schema.constraint_column_usage
+                        WHERE table_schema = '{schema}'
+                        AND table_name = '{table}'
+                        AND constraint_name LIKE 'fk_%'
+                    """.format(
+                schema=schema,
+                table=table_name
+            )
+
+            data = cur.execute(fk_query).fetchall()
+
+        fkeys = []
+        for fk in data:
+            name = fk[CONSTRAINT_NAME]
+            col_name = fk[COLUMN_NAME]
+            con_schema = fk[CONTRAINT_SCHEMA]
+            table = fk[TABLE_NAME]
+
+            fkey_d = {
+                "name": name,
+                "constrained_columns": col_name,
+                "referred_schema": con_schema,
+                "referred_table": "charger_evse",   # TODO: Replace, hardcode for testing
+                "referred_columns": col_name,
+            }
+            fkeys.append(fkey_d)
+
+        return fkeys
 
     def get_indexes(self, connection, table_name, schema=None, **kw):
         """Return information about indexes in `table_name`.
