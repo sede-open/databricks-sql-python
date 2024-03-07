@@ -154,6 +154,9 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
         return text + self.preparer.format_table(drop.element)
 
+    def visit_drop_view(self, drop, **kw):
+        return "\nDROP VIEW IF EXISTS " + self.preparer.format_table(drop.element)
+
 
 @compiles(ColumnComment, "databricks")
 def visit_column_comment(
