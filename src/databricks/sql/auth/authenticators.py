@@ -4,6 +4,7 @@ import logging
 from typing import Callable, Dict, List
 
 from databricks.sql.auth.oauth import OAuthManager
+from databricks.sql.auth.endpoint import get_oauth_endpoints, infer_cloud_from_host
 
 # Private API: this is an evolving interface and it will change in the future.
 # Please must not depend on it in your applications.
@@ -16,6 +17,7 @@ class AuthProvider:
 
 
 HeaderFactory = Callable[[], Dict[str, str]]
+
 
 # In order to keep compatibility with SDK
 class CredentialsProvider(abc.ABC):
@@ -43,21 +45,6 @@ class AccessTokenAuthProvider(AuthProvider):
 
 # Private API: this is an evolving interface and it will change in the future.
 # Please must not depend on it in your applications.
-class BasicAuthProvider(AuthProvider):
-    def __init__(self, username: str, password: str):
-        auth_credentials = f"{username}:{password}".encode("UTF-8")
-        auth_credentials_base64 = base64.standard_b64encode(auth_credentials).decode(
-            "UTF-8"
-        )
-
-        self.__authorization_header_value = f"Basic {auth_credentials_base64}"
-
-    def add_headers(self, request_headers: Dict[str, str]):
-        request_headers["Authorization"] = self.__authorization_header_value
-
-
-# Private API: this is an evolving interface and it will change in the future.
-# Please must not depend on it in your applications.
 class DatabricksOAuthProvider(AuthProvider):
     SCOPE_DELIM = " "
 
@@ -68,13 +55,25 @@ class DatabricksOAuthProvider(AuthProvider):
         redirect_port_range: List[int],
         client_id: str,
         scopes: List[str],
+        auth_type: str = "databricks-oauth",
     ):
         try:
+            idp_endpoint = get_oauth_endpoints(hostname, auth_type == "azure-oauth")
+            if not idp_endpoint:
+                raise NotImplementedError(
+                    f"OAuth is not supported for host ${hostname}"
+                )
+
+            # Convert to the corresponding scopes in the corresponding IdP
+            cloud_scopes = idp_endpoint.get_scopes_mapping(scopes)
+
             self.oauth_manager = OAuthManager(
-                port_range=redirect_port_range, client_id=client_id
+                port_range=redirect_port_range,
+                client_id=client_id,
+                idp_endpoint=idp_endpoint,
             )
             self._hostname = hostname
-            self._scopes_as_str = DatabricksOAuthProvider.SCOPE_DELIM.join(scopes)
+            self._scopes_as_str = DatabricksOAuthProvider.SCOPE_DELIM.join(cloud_scopes)
             self._oauth_persistence = oauth_persistence
             self._client_id = client_id
             self._access_token = None

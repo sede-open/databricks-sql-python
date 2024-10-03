@@ -7,7 +7,7 @@ We provide example scripts so you can see the connector in action for basic usag
     - DATABRICKS_TOKEN
 
 Follow the quick start in our [README](../README.md) to install `databricks-sql-connector` and see
-how to find the hostname, http path, and access token. Note that for the OAuth examples below a 
+how to find the hostname, http path, and access token. Note that for the OAuth examples below a
 personal access token is not needed.
 
 
@@ -33,9 +33,12 @@ To run all of these examples you can clone the entire repository to your disk. O
 - **`insert_data.py`** adds a tables called `squares` to your default catalog and inserts one hundred rows of example data. Then it fetches this data and prints it to the screen.
 - **`query_cancel.py`** shows how to cancel a query assuming that you can access the `Cursor` executing that query from a different thread. This is necessary because `databricks-sql-connector` does not yet implement an asynchronous API; calling `.execute()` blocks the current thread until execution completes. Therefore, the connector can't cancel queries from the same thread where they began.
 - **`interactive_oauth.py`** shows the simplest example of authenticating by OAuth (no need for a PAT generated in the DBSQL UI) while Bring Your Own IDP is in public preview. When you run the script it will open a browser window so you can authenticate. Afterward, the script fetches some sample data from Databricks and prints it to the screen. For this script, the OAuth token is not persisted which means you need to authenticate every time you run the script.
+- **`m2m_oauth.py`** shows the simplest example of authenticating by using OAuth M2M (machine-to-machine) for service principal.
 - **`persistent_oauth.py`** shows a more advanced example of authenticating by OAuth while Bring Your Own IDP is in public preview. In this case, it shows how to use a sublcass of `OAuthPersistence` to reuse an OAuth token across script executions.
 - **`set_user_agent.py`** shows how to customize the user agent header used for Thrift commands. In
 this example the string `ExamplePartnerTag` will be added to the the user agent on every request.
 - **`staging_ingestion.py`** shows how the connector handles Databricks' experimental staging ingestion commands `GET`, `PUT`, and `REMOVE`.
-- **`sqlalchemy.py`** shows a basic example of connecting to Databricks with [SQLAlchemy](https://www.sqlalchemy.org/). 
+- **`sqlalchemy.py`** shows a basic example of connecting to Databricks with [SQLAlchemy 2.0](https://www.sqlalchemy.org/).
 - **`custom_cred_provider.py`** shows how to pass a custom credential provider to bypass connector authentication. Please install databricks-sdk prior to running this example.
+- **`v3_retries_query_execute.py`** shows how to enable v3 retries in connector version 2.9.x including how to enable retries for non-default retry cases.
+- **`parameters.py`** shows how to use parameters in native and inline modes.

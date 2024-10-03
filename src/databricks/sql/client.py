@@ -1,24 +1,60 @@
-from typing import Dict, Tuple, List, Optional, Any, Union
+from typing import Dict, Tuple, List, Optional, Any, Union, Sequence
 
 import pandas
-import pyarrow
+try:
+    import pyarrow
+except ImportError:
+    pyarrow = None
 import requests
 import json
 import os
+import decimal
+from uuid import UUID
 
 from databricks.sql import __version__
 from databricks.sql import *
-from databricks.sql.exc import OperationalError
+from databricks.sql.exc import (
+    OperationalError,
+    SessionAlreadyClosedError,
+    CursorAlreadyClosedError,
+)
+from databricks.sql.thrift_api.TCLIService import ttypes
 from databricks.sql.thrift_backend import ThriftBackend
-from databricks.sql.utils import ExecuteResponse, ParamEscaper, inject_parameters
-from databricks.sql.types import Row
+from databricks.sql.utils import (
+    ExecuteResponse,
+    ParamEscaper,
+    inject_parameters,
+    transform_paramstyle,
+    ColumnTable,
+    ColumnQueue
+)
+from databricks.sql.parameters.native import (
+    DbsqlParameterBase,
+    TDbsqlParameter,
+    TParameterDict,
+    TParameterSequence,
+    TParameterCollection,
+    ParameterStructure,
+    dbsql_parameter_from_primitive,
+    ParameterApproach,
+)
+
+
+from databricks.sql.types import Row, SSLOptions
 from databricks.sql.auth.auth import get_python_sql_connector_auth_provider
 from databricks.sql.experimental.oauth_persistence import OAuthPersistence
 
+from databricks.sql.thrift_api.TCLIService.ttypes import (
+    TSparkParameter,
+)
+
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_RESULT_BUFFER_SIZE_BYTES = 10485760
+DEFAULT_RESULT_BUFFER_SIZE_BYTES = 104857600
 DEFAULT_ARRAY_SIZE = 100000
+
+NO_NATIVE_PARAMS: List = []
 
 
 class Connection:
@@ -28,9 +64,10 @@ class Connection:
         http_path: str,
         access_token: Optional[str] = None,
         http_headers: Optional[List[Tuple[str, str]]] = None,
-        session_configuration: Dict[str, Any] = None,
+        session_configuration: Optional[Dict[str, Any]] = None,
         catalog: Optional[str] = None,
         schema: Optional[str] = None,
+        _use_arrow_native_complex_types: Optional[bool] = True,
         **kwargs,
     ) -> None:
         """
@@ -44,11 +81,13 @@ class Connection:
                 Http Bearer access token, e.g. Databricks Personal Access Token.
                 Unless if you use auth_type=`databricks-oauth` you need to pass `access_token.
                 Examples:
+                        ```
                          connection = sql.connect(
                             server_hostname='dbc-12345.staging.cloud.databricks.com',
                             http_path='sql/protocolv1/o/6789/12abc567',
                             access_token='dabpi12345678'
                          )
+                        ```
             :param http_headers: An optional list of (k, v) pairs that will be set as Http headers on every request
             :param session_configuration: An optional dictionary of Spark session parameters. Defaults to None.
                 Execute the SQL command `SET -v` to get a full list of available commands.
@@ -56,12 +95,15 @@ class Connection:
             :param schema: An optional initial schema to use. Requires DBR version 9.0+
 
         Other Parameters:
-            auth_type: `str`, optional
-                `databricks-oauth` : to use oauth with fine-grained permission scopes, set to `databricks-oauth`.
-                This is currently in private preview for Databricks accounts on AWS.
-                This supports User to Machine OAuth authentication for Databricks on AWS with
-                any IDP configured. This is only for interactive python applications and open a browser window.
-                Note this is beta (private preview)
+            use_inline_params: `boolean` | str, optional (default is False)
+                When True, parameterized calls to cursor.execute() will try to render parameter values inline with the
+                query text instead of using native bound parameters supported in DBR 14.1 and above. This connector will attempt to
+                sanitise parameterized inputs to prevent SQL injection.  The inline parameter approach is maintained for
+                legacy purposes and will be deprecated in a future release. When this parameter is `True` you will see
+                a warning log message. To suppress this log message, set `use_inline_params="silent"`.
+            auth_type: `str`, optional (default is databricks-oauth if neither `access_token` nor `tls_client_cert_file` is set)
+                `databricks-oauth` : to use Databricks OAuth with fine-grained permission scopes, set to `databricks-oauth`.
+                `azure-oauth` : to use Microsoft Entra ID OAuth flow, set to `azure-oauth`.
 
             oauth_client_id: `str`, optional
                 custom oauth client_id. If not specified, it will use the built-in client_id of databricks-sql-python.
@@ -72,9 +114,9 @@ class Connection:
 
             experimental_oauth_persistence: configures preferred storage for persisting oauth tokens.
                 This has to be a class implementing `OAuthPersistence`.
-                When `auth_type` is set to `databricks-oauth` without persisting the oauth token in a persistence storage
-                the oauth tokens will only be maintained in memory and if the python process restarts the end user
-                will have to login again.
+                When `auth_type` is set to `databricks-oauth` or `azure-oauth` without persisting the oauth token in a
+                persistence storage the oauth tokens will only be maintained in memory and if the python process
+                restarts the end user will have to login again.
                 Note this is beta (private preview)
 
                 For persisting the oauth token in a prod environment you should subclass and implement OAuthPersistence
@@ -103,6 +145,7 @@ class Connection:
                 own implementation of OAuthPersistence.
 
                 Examples:
+                ```
                         # for development only
                         from databricks.sql.experimental.oauth_persistence import DevOnlyFilePersistence
 
@@ -112,30 +155,37 @@ class Connection:
                             auth_type="databricks-oauth",
                             experimental_oauth_persistence=DevOnlyFilePersistence("~/dev-oauth.json")
                         )
-
-
+                ```
+            :param _use_arrow_native_complex_types: `bool`, optional
+                Controls whether a complex type field value is returned as a string or as a native Arrow type. Defaults to True.
+                When True:
+                    MAP is returned as List[Tuple[str, Any]]
+                    STRUCT is returned as Dict[str, Any]
+                    ARRAY is returned as numpy.ndarray
+                When False, complex types are returned as a strings. These are generally deserializable as JSON.
         """
 
         # Internal arguments in **kwargs:
         # _user_agent_entry
         #   Tag to add to User-Agent header. For use by partners.
-        # _username, _password
-        #   Username and password Basic authentication (no official support)
         # _use_cert_as_auth
-        #  Use a TLS cert instead of a token or username / password (internal use only)
+        #  Use a TLS cert instead of a token
         # _enable_ssl
         #  Connect over HTTP instead of HTTPS
         # _port
         #  Which port to connect to
         # _skip_routing_headers:
         #  Don't set routing headers if set to True (for use when connecting directly to server)
+        # _tls_no_verify
+        #   Set to True (Boolean) to completely disable SSL verification.
         # _tls_verify_hostname
         #   Set to False (Boolean) to disable SSL hostname verification, but check certificate.
         # _tls_trusted_ca_file
         #   Set to the path of the file containing trusted CA certificates for server certificate
         #   verification. If not provide, uses system truststore.
-        # _tls_client_cert_file, _tls_client_cert_key_file
+        # _tls_client_cert_file, _tls_client_cert_key_file, _tls_client_cert_key_password
         #   Set client SSL certificate.
+        #   See https://docs.python.org/3/library/ssl.html#ssl.SSLContext.load_cert_chain
         # _retry_stop_after_attempts_count
         #  The maximum number of attempts during a request retry sequence (defaults to 24)
         # _socket_timeout
@@ -144,15 +194,14 @@ class Connection:
         # _disable_pandas
         #  In case the deserialisation through pandas causes any issues, it can be disabled with
         #  this flag.
-        # _use_arrow_native_complex_types
-        # DBR will return native Arrow types for structs, arrays and maps instead of Arrow strings
-        # (True by default)
         # _use_arrow_native_decimals
         # Databricks runtime will return native Arrow types for decimals instead of Arrow strings
         # (True by default)
         # _use_arrow_native_timestamps
         # Databricks runtime will return native Arrow types for timestamps instead of Arrow strings
         # (True by default)
+        # use_cloud_fetch
+        # Enable use of cloud fetch to extract large query results in parallel via cloud storage
 
         if access_token:
             access_token_kv = {"access_token": access_token}
@@ -177,23 +226,72 @@ class Connection:
 
         base_headers = [("User-Agent", useragent_header)]
 
+        self._ssl_options = SSLOptions(
+            # Double negation is generally a bad thing, but we have to keep backward compatibility
+            tls_verify=not kwargs.get(
+                "_tls_no_verify", False
+            ),  # by default - verify cert and host
+            tls_verify_hostname=kwargs.get("_tls_verify_hostname", True),
+            tls_trusted_ca_file=kwargs.get("_tls_trusted_ca_file"),
+            tls_client_cert_file=kwargs.get("_tls_client_cert_file"),
+            tls_client_cert_key_file=kwargs.get("_tls_client_cert_key_file"),
+            tls_client_cert_key_password=kwargs.get("_tls_client_cert_key_password"),
+        )
+
         self.thrift_backend = ThriftBackend(
             self.host,
             self.port,
             http_path,
             (http_headers or []) + base_headers,
             auth_provider,
+            ssl_options=self._ssl_options,
+            _use_arrow_native_complex_types=_use_arrow_native_complex_types,
             **kwargs,
         )
 
-        self._session_handle = self.thrift_backend.open_session(
+        self._open_session_resp = self.thrift_backend.open_session(
             session_configuration, catalog, schema
         )
+        self._session_handle = self._open_session_resp.sessionHandle
+        self.protocol_version = self.get_protocol_version(self._open_session_resp)
+        self.use_cloud_fetch = kwargs.get("use_cloud_fetch", True)
         self.open = True
-        logger.info("Successfully opened session " + str(self.get_session_id()))
+        logger.info("Successfully opened session " + str(self.get_session_id_hex()))
         self._cursors = []  # type: List[Cursor]
 
-    def __enter__(self):
+        self.use_inline_params = self._set_use_inline_params_with_warning(
+            kwargs.get("use_inline_params", False)
+        )
+
+    def _set_use_inline_params_with_warning(self, value: Union[bool, str]):
+        """Valid values are True, False, and "silent"
+
+        False: Use native parameters
+        True: Use inline parameters and log a warning
+        "silent": Use inline parameters and don't log a warning
+        """
+
+        if value is False:
+            return False
+
+        if value not in [True, "silent"]:
+            raise ValueError(
+                f"Invalid value for use_inline_params: {value}. "
+                + 'Valid values are True, False, and "silent"'
+            )
+
+        if value is True:
+            logger.warning(
+                "Parameterised queries executed with this client will use the inline parameter approach."
+                "This approach will be deprecated in a future release. Consider using native parameters."
+                "Learn more: https://github.com/databricks/databricks-sql-python/tree/main/docs/parameters.md"
+                'To suppress this warning, set use_inline_params="silent"'
+            )
+
+        return value
+
+    # The ideal return type for this method is perhaps Self, but that was not added until 3.11, and we support pre-3.11 pythons, currently.
+    def __enter__(self) -> "Connection":
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -203,7 +301,7 @@ class Connection:
         if self.open:
             logger.debug(
                 "Closing unclosed connection for session "
-                "{}".format(self.get_session_id())
+                "{}".format(self.get_session_id_hex())
             )
             try:
                 self._close(close_cursors=False)
@@ -213,6 +311,33 @@ class Connection:
 
     def get_session_id(self):
         return self.thrift_backend.handle_to_id(self._session_handle)
+
+    @staticmethod
+    def get_protocol_version(openSessionResp):
+        """
+        Since the sessionHandle will sometimes have a serverProtocolVersion, it takes
+        precedence over the serverProtocolVersion defined in the OpenSessionResponse.
+        """
+        if (
+            openSessionResp.sessionHandle
+            and hasattr(openSessionResp.sessionHandle, "serverProtocolVersion")
+            and openSessionResp.sessionHandle.serverProtocolVersion
+        ):
+            return openSessionResp.sessionHandle.serverProtocolVersion
+        return openSessionResp.serverProtocolVersion
+
+    @staticmethod
+    def server_parameterized_queries_enabled(protocolVersion):
+        if (
+            protocolVersion
+            and protocolVersion >= ttypes.TProtocolVersion.SPARK_CLI_SERVICE_PROTOCOL_V8
+        ):
+            return True
+        else:
+            return False
+
+    def get_session_id_hex(self):
+        return self.thrift_backend.handle_to_hex_id(self._session_handle)
 
     def cursor(
         self,
@@ -244,7 +369,28 @@ class Connection:
         if close_cursors:
             for cursor in self._cursors:
                 cursor.close()
-        self.thrift_backend.close_session(self._session_handle)
+
+        logger.info(f"Closing session {self.get_session_id_hex()}")
+        if not self.open:
+            logger.debug("Session appears to have been closed already")
+
+        try:
+            self.thrift_backend.close_session(self._session_handle)
+        except RequestError as e:
+            if isinstance(e.args[1], SessionAlreadyClosedError):
+                logger.info("Session was closed by a prior request")
+        except DatabaseError as e:
+            if "Invalid SessionHandle" in str(e):
+                logger.warning(
+                    f"Attempted to close session that was already closed: {e}"
+                )
+            else:
+                logger.warning(
+                    f"Attempt to close session raised an exception at the server: {e}"
+                )
+        except Exception as e:
+            logger.error(f"Attempt to close session raised a local exception: {e}")
+
         self.open = False
 
     def commit(self):
@@ -283,7 +429,8 @@ class Cursor:
         self.escaper = ParamEscaper()
         self.lastrowid = None
 
-    def __enter__(self):
+    # The ideal return type for this method is perhaps Self, but that was not added until 3.11, and we support pre-3.11 pythons, currently.
+    def __enter__(self) -> "Cursor":
         return self
 
     def __exit__(self, exc_type, exc_value, traceback):
@@ -295,6 +442,132 @@ class Cursor:
                 yield row
         else:
             raise Error("There is no active result set")
+
+    def _determine_parameter_approach(
+        self, params: Optional[TParameterCollection]
+    ) -> ParameterApproach:
+        """Encapsulates the logic for choosing whether to send parameters in native vs inline mode
+
+        If params is None then ParameterApproach.NONE is returned.
+        If self.use_inline_params is True then inline mode is used.
+        If self.use_inline_params is False, then check if the server supports them and proceed.
+            Else raise an exception.
+
+        Returns a ParameterApproach enumeration or raises an exception
+
+        If inline approach is used when the server supports native approach, a warning is logged
+        """
+
+        if params is None:
+            return ParameterApproach.NONE
+
+        if self.connection.use_inline_params:
+            return ParameterApproach.INLINE
+
+        else:
+            return ParameterApproach.NATIVE
+
+    def _all_dbsql_parameters_are_named(self, params: List[TDbsqlParameter]) -> bool:
+        """Return True if all members of the list have a non-null .name attribute"""
+        return all([i.name is not None for i in params])
+
+    def _normalize_tparametersequence(
+        self, params: TParameterSequence
+    ) -> List[TDbsqlParameter]:
+        """Retains the same order as the input list."""
+
+        output: List[TDbsqlParameter] = []
+        for p in params:
+            if isinstance(p, DbsqlParameterBase):
+                output.append(p)
+            else:
+                output.append(dbsql_parameter_from_primitive(value=p))
+
+        return output
+
+    def _normalize_tparameterdict(
+        self, params: TParameterDict
+    ) -> List[TDbsqlParameter]:
+        return [
+            dbsql_parameter_from_primitive(value=value, name=name)
+            for name, value in params.items()
+        ]
+
+    def _normalize_tparametercollection(
+        self, params: Optional[TParameterCollection]
+    ) -> List[TDbsqlParameter]:
+        if params is None:
+            return []
+        if isinstance(params, dict):
+            return self._normalize_tparameterdict(params)
+        if isinstance(params, Sequence):
+            return self._normalize_tparametersequence(list(params))
+
+    def _determine_parameter_structure(
+        self,
+        parameters: List[TDbsqlParameter],
+    ) -> ParameterStructure:
+        all_named = self._all_dbsql_parameters_are_named(parameters)
+        if all_named:
+            return ParameterStructure.NAMED
+        else:
+            return ParameterStructure.POSITIONAL
+
+    def _prepare_inline_parameters(
+        self, stmt: str, params: Optional[Union[Sequence, Dict[str, Any]]]
+    ) -> Tuple[str, List]:
+        """Return a statement and list of native parameters to be passed to thrift_backend for execution
+
+        :stmt:
+            A string SQL query containing parameter markers of PEP-249 paramstyle `pyformat`.
+            For example `%(param)s`.
+
+        :params:
+            An iterable of parameter values to be rendered inline. If passed as a Dict, the keys
+            must match the names of the markers included in :stmt:. If passed as a List, its length
+            must equal the count of parameter markers in :stmt:.
+
+        Returns a tuple of:
+            stmt: the passed statement with the param markers replaced by literal rendered values
+            params: an empty list representing the native parameters to be passed with this query.
+                The list is always empty because native parameters are never used under the inline approach
+        """
+
+        escaped_values = self.escaper.escape_args(params)
+        rendered_statement = inject_parameters(stmt, escaped_values)
+
+        return rendered_statement, NO_NATIVE_PARAMS
+
+    def _prepare_native_parameters(
+        self,
+        stmt: str,
+        params: List[TDbsqlParameter],
+        param_structure: ParameterStructure,
+    ) -> Tuple[str, List[TSparkParameter]]:
+        """Return a statement and a list of native parameters to be passed to thrift_backend for execution
+
+        :stmt:
+            A string SQL query containing parameter markers of PEP-249 paramstyle `named`.
+            For example `:param`.
+
+        :params:
+            An iterable of parameter values to be sent natively. If passed as a Dict, the keys
+            must match the names of the markers included in :stmt:. If passed as a List, its length
+            must equal the count of parameter markers in :stmt:. In list form, any member of the list
+            can be wrapped in a DbsqlParameter class.
+
+        Returns a tuple of:
+            stmt: the passed statement` with the param markers replaced by literal rendered values
+            params: a list of TSparkParameters that will be passed in native mode
+        """
+
+        stmt = stmt
+        output = [
+            p.as_tspark_param(named=param_structure == ParameterStructure.NAMED)
+            for p in params
+        ]
+
+        return stmt, output
 
     def _close_and_clear_active_result_set(self):
         try:
@@ -355,12 +628,15 @@ class Cursor:
                     "Local file operations are restricted to paths within the configured staging_allowed_local_path"
                 )
 
-        # TODO: Experiment with DBR sending real headers.
-        # The specification says headers will be in JSON format but the current null value is actually an empty list []
+        # May be real headers, or could be json string
+        headers = (
+            json.loads(row.headers) if isinstance(row.headers, str) else row.headers
+        )
+
         handler_args = {
             "presigned_url": row.presignedUrl,
             "local_file": abs_localFile,
-            "headers": json.loads(row.headers or "{}"),
+            "headers": dict(headers) or {},
         }
 
         logger.debug(
@@ -383,7 +659,7 @@ class Cursor:
             )
 
     def _handle_staging_put(
-        self, presigned_url: str, local_file: str, headers: dict = None
+        self, presigned_url: str, local_file: str, headers: Optional[dict] = None
     ):
         """Make an HTTP PUT request
 
@@ -398,7 +674,7 @@ class Cursor:
 
         # fmt: off
         # Design borrowed from: https://stackoverflow.com/a/2342589/5093960
-            
+
         OK = requests.codes.ok                  # 200
         CREATED = requests.codes.created        # 201
         ACCEPTED = requests.codes.accepted      # 202
@@ -418,7 +694,7 @@ class Cursor:
             )
 
     def _handle_staging_get(
-        self, local_file: str, presigned_url: str, headers: dict = None
+        self, local_file: str, presigned_url: str, headers: Optional[dict] = None
     ):
         """Make an HTTP GET request, create a local file with the received data
 
@@ -440,7 +716,9 @@ class Cursor:
         with open(local_file, "wb") as fp:
             fp.write(r.content)
 
-    def _handle_staging_remove(self, presigned_url: str, headers: dict = None):
+    def _handle_staging_remove(
+        self, presigned_url: str, headers: Optional[dict] = None
+    ):
         """Make an HTTP DELETE request to the presigned_url"""
 
         r = requests.delete(url=presigned_url, headers=headers)
@@ -451,31 +729,72 @@ class Cursor:
             )
 
     def execute(
-        self, operation: str, parameters: Optional[Dict[str, str]] = None
+        self,
+        operation: str,
+        parameters: Optional[TParameterCollection] = None,
     ) -> "Cursor":
         """
         Execute a query and wait for execution to complete.
-        Parameters should be given in extended param format style: %(...)<s|d|f>.
-        For example:
-            operation = "SELECT * FROM table WHERE field = %(some_value)s"
-            parameters = {"some_value": "foo"}
-            Will result in the query "SELECT * FROM table WHERE field = 'foo' being sent to the server
+
+        The parameterisation behaviour of this method depends on which parameter approach is used:
+            - With INLINE mode, parameters are rendered inline with the query text
+            - With NATIVE mode (default), parameters are sent to the server separately for binding
+
+        This behaviour is controlled by the `use_inline_params` argument passed when building a connection.
+
+        The paramstyle for these approaches is different:
+
+        If the connection was instantiated with use_inline_params=False (default), then parameters
+        should be given in PEP-249 `named` paramstyle like :param_name. Parameters passed by positionally
+        are indicated using a `?` in the query text.
+
+        If the connection was instantiated with use_inline_params=True, then parameters
+        should be given in PEP-249 `pyformat` paramstyle like %(param_name)s. Parameters passed by positionally
+        are indicated using a `%s` marker in the query. Note: this approach is not recommended as it can break
+        your SQL query syntax and will be removed in a future release.
+
+        ```python
+        inline_operation = "SELECT * FROM table WHERE field = %(some_value)s"
+        native_operation = "SELECT * FROM table WHERE field = :some_value"
+        parameters = {"some_value": "foo"}
+        ```
+
+        Both will result in the query equivalent to "SELECT * FROM table WHERE field = 'foo'
+        being sent to the server
+
         :returns self
         """
-        if parameters is not None:
-            operation = inject_parameters(
-                operation, self.escaper.escape_args(parameters)
+
+        param_approach = self._determine_parameter_approach(parameters)
+        if param_approach == ParameterApproach.NONE:
+            prepared_params = NO_NATIVE_PARAMS
+            prepared_operation = operation
+
+        elif param_approach == ParameterApproach.INLINE:
+            prepared_operation, prepared_params = self._prepare_inline_parameters(
+                operation, parameters
+            )
+        elif param_approach == ParameterApproach.NATIVE:
+            normalized_parameters = self._normalize_tparametercollection(parameters)
+            param_structure = self._determine_parameter_structure(normalized_parameters)
+            transformed_operation = transform_paramstyle(
+                operation, normalized_parameters, param_structure
+            )
+            prepared_operation, prepared_params = self._prepare_native_parameters(
+                transformed_operation, normalized_parameters, param_structure
             )
 
         self._check_not_closed()
         self._close_and_clear_active_result_set()
         execute_response = self.thrift_backend.execute_command(
-            operation=operation,
+            operation=prepared_operation,
             session_handle=self.connection._session_handle,
             max_rows=self.arraysize,
             max_bytes=self.buffer_size_bytes,
             lz4_compression=self.connection.lz4_compression,
             cursor=self,
+            use_cloud_fetch=self.connection.use_cloud_fetch,
+            parameters=prepared_params,
         )
         self.active_result_set = ResultSet(
             self.connection,
@@ -494,8 +813,10 @@ class Cursor:
 
     def executemany(self, operation, seq_of_parameters):
         """
-        Prepare a database operation (query or command) and then execute it against all parameter
-        sequences or mappings found in the sequence ``seq_of_parameters``.
+        Execute the operation once for every set of passed in parameters.
+
+        This will issue N sequential request to the database where N is the length of the provided sequence.
+        No optimizations of the query (like batching) will be performed.
 
         Only the final result set is retained.
 
@@ -561,7 +882,7 @@ class Cursor:
         catalog_name: Optional[str] = None,
         schema_name: Optional[str] = None,
         table_name: Optional[str] = None,
-        table_types: List[str] = None,
+        table_types: Optional[List[str]] = None,
     ) -> "Cursor":
         """
         Get tables corresponding to the catalog_name, schema_name and table_name.
@@ -675,14 +996,14 @@ class Cursor:
         else:
             raise Error("There is no active result set")
 
-    def fetchall_arrow(self) -> pyarrow.Table:
+    def fetchall_arrow(self) -> "pyarrow.Table":
         self._check_not_closed()
         if self.active_result_set:
             return self.active_result_set.fetchall_arrow()
         else:
             raise Error("There is no active result set")
 
-    def fetchmany_arrow(self, size) -> pyarrow.Table:
+    def fetchmany_arrow(self, size) -> "pyarrow.Table":
         self._check_not_closed()
         if self.active_result_set:
             return self.active_result_set.fetchmany_arrow(size)
@@ -707,8 +1028,21 @@ class Cursor:
     def close(self) -> None:
         """Close cursor"""
         self.open = False
+        self.active_op_handle = None
         if self.active_result_set:
             self._close_and_clear_active_result_set()
+
+    @property
+    def query_id(self) -> Optional[str]:
+        """
+        This attribute is an identifier of last executed query.
+
+        This attribute will be ``None`` if the cursor has not had an operation
+        invoked via the execute method yet, or if cursor was closed.
+        """
+        if self.active_op_handle is not None:
+            return str(UUID(bytes=self.active_op_handle.operationId.guid))
+        return None
 
     @property
     def description(self) -> Optional[List[Tuple]]:
@@ -801,6 +1135,7 @@ class ResultSet:
                 break
 
     def _fill_results_buffer(self):
+        # At initialization or if the server does not have cloud fetch result links available
         results, has_more_rows = self.thrift_backend.fetch_results(
             op_handle=self.command_id,
             max_rows=self.arraysize,
@@ -812,6 +1147,18 @@ class ResultSet:
         )
         self.results = results
         self.has_more_rows = has_more_rows
+
+    def _convert_columnar_table(self, table):
+        column_names = [c[0] for c in self.description]
+        ResultRow = Row(*column_names)
+        result = []
+        for row_index in range(table.num_rows):
+            curr_row = []
+            for col_index in range(table.num_columns):
+                curr_row.append(table.get_item(col_index,  row_index))
+            result.append(ResultRow(*curr_row))
+
+        return result
 
     def _convert_arrow_table(self, table):
         column_names = [c[0] for c in self.description]
@@ -848,14 +1195,14 @@ class ResultSet:
             timestamp_as_object=True,
         )
 
-        res = df.to_numpy(na_value=None)
+        res = df.to_numpy(na_value=None, dtype="object")
         return [ResultRow(*v) for v in res]
 
     @property
     def rownumber(self):
         return self._next_row_index
 
-    def fetchmany_arrow(self, size: int) -> pyarrow.Table:
+    def fetchmany_arrow(self, size: int) -> "pyarrow.Table":
         """
         Fetch the next set of rows of a query result, returning a PyArrow table.
 
@@ -880,7 +1227,46 @@ class ResultSet:
 
         return results
 
-    def fetchall_arrow(self) -> pyarrow.Table:
+    def merge_columnar(self, result1, result2):
+        """
+        Function to merge / combining the columnar results into a single result
+        :param result1:
+        :param result2:
+        :return:
+        """
+
+        if result1.column_names != result2.column_names:
+            raise ValueError("The columns in the results don't match")
+
+        merged_result = [result1.column_table[i] + result2.column_table[i] for i in range(result1.num_columns)]
+        return ColumnTable(merged_result, result1.column_names)
+
+    def fetchmany_columnar(self, size: int):
+        """
+        Fetch the next set of rows of a query result, returning a Columnar Table.
+        An empty sequence is returned when no more rows are available.
+        """
+        if size < 0:
+            raise ValueError("size argument for fetchmany is %s but must be >= 0", size)
+
+        results = self.results.next_n_rows(size)
+        n_remaining_rows = size - results.num_rows
+        self._next_row_index += results.num_rows
+
+        while (
+                n_remaining_rows > 0
+                and not self.has_been_closed_server_side
+                and self.has_more_rows
+        ):
+            self._fill_results_buffer()
+            partial_results = self.results.next_n_rows(n_remaining_rows)
+            results = self.merge_columnar(results, partial_results)
+            n_remaining_rows -= partial_results.num_rows
+            self._next_row_index += partial_results.num_rows
+
+        return results
+
+    def fetchall_arrow(self) -> "pyarrow.Table":
         """Fetch all (remaining) rows of a query result, returning them as a PyArrow table."""
         results = self.results.remaining_rows()
         self._next_row_index += results.num_rows
@@ -893,12 +1279,30 @@ class ResultSet:
 
         return results
 
+    def fetchall_columnar(self):
+        """Fetch all (remaining) rows of a query result, returning them as a Columnar table."""
+        results = self.results.remaining_rows()
+        self._next_row_index += results.num_rows
+
+        while not self.has_been_closed_server_side and self.has_more_rows:
+            self._fill_results_buffer()
+            partial_results = self.results.remaining_rows()
+            results = self.merge_columnar(results, partial_results)
+            self._next_row_index += partial_results.num_rows
+
+        return results
+
     def fetchone(self) -> Optional[Row]:
         """
         Fetch the next row of a query result set, returning a single sequence,
         or None when no more data is available.
         """
-        res = self._convert_arrow_table(self.fetchmany_arrow(1))
+
+        if isinstance(self.results, ColumnQueue):
+            res = self._convert_columnar_table(self.fetchmany_columnar(1))
+        else:
+            res = self._convert_arrow_table(self.fetchmany_arrow(1))
+
         if len(res) > 0:
             return res[0]
         else:
@@ -908,7 +1312,10 @@ class ResultSet:
         """
         Fetch all (remaining) rows of a query result, returning them as a list of rows.
         """
-        return self._convert_arrow_table(self.fetchall_arrow())
+        if isinstance(self.results, ColumnQueue):
+            return self._convert_columnar_table(self.fetchall_columnar())
+        else:
+            return self._convert_arrow_table(self.fetchall_arrow())
 
     def fetchmany(self, size: int) -> List[Row]:
         """
@@ -916,7 +1323,10 @@ class ResultSet:
 
         An empty sequence is returned when no more rows are available.
         """
-        return self._convert_arrow_table(self.fetchmany_arrow(size))
+        if isinstance(self.results, ColumnQueue):
+            return self._convert_columnar_table(self.fetchmany_columnar(size))
+        else:
+            return self._convert_arrow_table(self.fetchmany_arrow(size))
 
     def close(self) -> None:
         """
@@ -932,6 +1342,9 @@ class ResultSet:
                 and self.connection.open
             ):
                 self.thrift_backend.close_command(self.command_id)
+        except RequestError as e:
+            if isinstance(e.args[1], CursorAlreadyClosedError):
+                logger.info("Operation was canceled by a prior request")
         finally:
             self.has_been_closed_server_side = True
             self.op_state = self.thrift_backend.CLOSED_OP_STATE

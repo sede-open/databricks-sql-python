@@ -1,5 +1,5 @@
 name: Code Quality Checks
-on: 
+on:
   push:
     branches:
       - main
@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.7, 3.8, 3.9, "3.10", "3.11"]
+        python-version: [3.8, 3.9, "3.10", "3.11"]
     steps:
       #----------------------------------------------
       #       check-out repo and set-up python
@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.7, 3.8, 3.9, "3.10"]
+        python-version: [3.8, 3.9, "3.10"]
     steps:
       #----------------------------------------------
       #       check-out repo and set-up python
@@ -114,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        python-version: [3.7, 3.8, 3.9, "3.10"]
+        python-version: [3.8, 3.9, "3.10"]
     steps:
       #----------------------------------------------
       #       check-out repo and set-up python
@@ -157,7 +157,9 @@ jobs:
       - name: Install library
         run: poetry install --no-interaction
       #----------------------------------------------
-      #              black the code
+      #              mypy the code
       #----------------------------------------------
       - name: Mypy
-        run: poetry run mypy --install-types --non-interactive src
+        run: |
+          mkdir .mypy_cache # Workaround for bad error message "error: --install-types failed (no mypy cache directory)"; see https://github.com/python/mypy/issues/10768#issuecomment-2178450153
+          poetry run mypy --install-types --non-interactive src

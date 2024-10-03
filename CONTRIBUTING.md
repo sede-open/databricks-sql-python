@@ -74,7 +74,7 @@ If you set your `user.name` and `user.email` git configs, you can sign your comm
 This project uses [Poetry](https://python-poetry.org/) for dependency management, tests, and linting.
 
 1. Clone this respository
-2. Run `poetry install` 
+2. Run `poetry install`
 
 ### Run tests
 
@@ -107,7 +107,20 @@ End-to-end tests require a Databricks account. Before you can run them, you must
 export host=""
 export http_path=""
 export access_token=""
+export catalog=""
+export schema=""
 ```
+
+Or you can write these into a file called `test.env` in the root of the repository:
+
+```
+host="****.cloud.databricks.com"
+http_path="/sql/1.0/warehouses/***"
+access_token="dapi***"
+staging_ingestion_user="***@example.com"
+```
+
+To see logging output from pytest while running tests, set `log_cli = "true"` under `tool.pytest.ini_options` in `pyproject.toml`. You can also set `log_cli_level` to any of the default Python log levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`
 
 There are several e2e test suites available:
 - `PySQLCoreTestSuite`
@@ -130,6 +143,11 @@ The `PySQLLargeQueriesSuite` namespace contains long-running query tests and is 
 The `PySQLStagingIngestionTestSuite` namespace requires a cluster running DBR version > 12.x which supports staging ingestion commands.
 
 The suites marked `[not documented]` require additional configuration which will be documented at a later time.
+
+#### SQLAlchemy dialect tests
+
+See README.tests.md for details.
+
 ### Code formatting
 
 This project uses [Black](https://pypi.org/project/black/).
@@ -149,5 +167,4 @@ Modify the dependency specification (syntax can be found [here](https://python-p
 - `poetry update`
 - `rm poetry.lock && poetry install`
 
-Sometimes `poetry update` can freeze or run forever. Deleting the `poetry.lock` file and calling `poetry install` is guaranteed to update everything but is usually _slower_ than `poetry update` **if `poetry update` works at all**. 
-
+Sometimes `poetry update` can freeze or run forever. Deleting the `poetry.lock` file and calling `poetry install` is guaranteed to update everything but is usually _slower_ than `poetry update` **if `poetry update` works at all**.

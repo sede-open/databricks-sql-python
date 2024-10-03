@@ -3,40 +3,61 @@ import errno
 import logging
 import math
 import time
+import uuid
 import threading
-import lz4.frame
-from ssl import CERT_NONE, CERT_REQUIRED, create_default_context
 from typing import List, Union
 
-import pyarrow
+try:
+    import pyarrow
+except ImportError:
+    pyarrow = None
 import thrift.transport.THttpClient
 import thrift.protocol.TBinaryProtocol
 import thrift.transport.TSocket
 import thrift.transport.TTransport
 
+import urllib3.exceptions
+
 import databricks.sql.auth.thrift_http_client
+from databricks.sql.auth.thrift_http_client import CommandType
 from databricks.sql.auth.authenticators import AuthProvider
 from databricks.sql.thrift_api.TCLIService import TCLIService, ttypes
 from databricks.sql import *
+from databricks.sql.exc import MaxRetryDurationError
 from databricks.sql.thrift_api.TCLIService.TCLIService import (
     Client as TCLIServiceClient,
 )
 
 from databricks.sql.utils import (
-    ArrowQueue,
     ExecuteResponse,
     _bound,
     RequestErrorInfo,
     NoRetryReason,
+    ResultSetQueueFactory,
+    convert_arrow_based_set_to_arrow_table,
+    convert_decimals_in_arrow_table,
+    convert_column_based_set_to_arrow_table,
 )
+from databricks.sql.types import SSLOptions
 
 logger = logging.getLogger(__name__)
+
+unsafe_logger = logging.getLogger("databricks.sql.unsafe")
+unsafe_logger.setLevel(logging.DEBUG)
+
+# To capture these logs in client code, add a non-NullHandler.
+# See our e2e test suite for an example with logging.FileHandler
+unsafe_logger.addHandler(logging.NullHandler())
+
+# Disable propagation so that handlers for `databricks.sql` don't pick up these messages
+unsafe_logger.propagate = False
 
 THRIFT_ERROR_MESSAGE_HEADER = "x-thriftserver-error-message"
 DATABRICKS_ERROR_OR_REDIRECT_HEADER = "x-databricks-error-or-redirect-message"
 DATABRICKS_REASON_HEADER = "x-databricks-reason-phrase"
 
 TIMESTAMP_AS_STRING_CONFIG = "spark.thriftserver.arrowBasedRowSet.timestampAsString"
+DEFAULT_SOCKET_TIMEOUT = float(900)
 
 # see Connection.__init__ for parameter descriptions.
 # - Min/Max avoids unsustainable configs (sane values are far more constrained)
@@ -53,7 +74,12 @@ _retry_policy = {  # (type, default, min, max)
 class ThriftBackend:
     CLOSED_OP_STATE = ttypes.TOperationState.CLOSED_STATE
     ERROR_OP_STATE = ttypes.TOperationState.ERROR_STATE
-    BIT_MASKS = [1, 2, 4, 8, 16, 32, 64, 128]
+
+    _retry_delay_min: float
+    _retry_delay_max: float
+    _retry_stop_after_attempts_count: int
+    _retry_stop_after_attempts_duration: float
+    _retry_delay_default: float
 
     def __init__(
         self,
@@ -62,6 +88,7 @@ class ThriftBackend:
         http_path: str,
         http_headers,
         auth_provider: AuthProvider,
+        ssl_options: SSLOptions,
         staging_allowed_local_path: Union[None, str, List[str]] = None,
         **kwargs,
     ):
@@ -70,16 +97,6 @@ class ThriftBackend:
         #   Tag to add to User-Agent header. For use by partners.
         # _username, _password
         #   Username and password Basic authentication (no official support)
-        # _tls_no_verify
-        #   Set to True (Boolean) to completely disable SSL verification.
-        # _tls_verify_hostname
-        #   Set to False (Boolean) to disable SSL hostname verification, but check certificate.
-        # _tls_trusted_ca_file
-        #   Set to the path of the file containing trusted CA certificates for server certificate
-        #   verification. If not provide, uses system truststore.
-        # _tls_client_cert_file, _tls_client_cert_key_file, _tls_client_cert_key_password
-        #   Set client SSL certificate.
-        #   See https://docs.python.org/3/library/ssl.html#ssl.SSLContext.load_cert_chain
         # _connection_uri
         #   Overrides server_hostname and http_path.
         # RETRY/ATTEMPT POLICY
@@ -98,17 +115,31 @@ class ThriftBackend:
         #
         # _retry_stop_after_attempts_count
         #  The maximum number of times we should retry retryable requests (defaults to 24)
+        # _retry_dangerous_codes
+        #  An iterable of integer HTTP status codes. ExecuteStatement commands will be retried if these codes are received.
+        #  (defaults to [])
         # _socket_timeout
-        #  The timeout in seconds for socket send, recv and connect operations. Defaults to None for
-        #  no timeout. Should be a positive float or integer.
+        #  The timeout in seconds for socket send, recv and connect operations. Should be a positive float or integer.
+        #  (defaults to 900)
+        # _enable_v3_retries
+        # Whether to use the DatabricksRetryPolicy implemented in urllib3
+        # (defaults to True)
+        # _retry_max_redirects
+        #  An integer representing the maximum number of redirects to follow for a request.
+        #  This number must be <= _retry_stop_after_attempts_count.
+        #  (defaults to None)
+        # max_download_threads
+        #  Number of threads for handling cloud fetch downloads. Defaults to 10
 
         port = port or 443
         if kwargs.get("_connection_uri"):
             uri = kwargs.get("_connection_uri")
         elif server_hostname and http_path:
-            uri = "https://{host}:{port}/{path}".format(
-                host=server_hostname, port=port, path=http_path.lstrip("/")
+            uri = "{host}:{port}/{path}".format(
+                host=server_hostname.rstrip("/"), port=port, path=http_path.lstrip("/")
             )
+            if not uri.startswith("https://"):
+                uri = "https://" + uri
         else:
             raise ValueError("No valid connection settings.")
 
@@ -122,38 +153,56 @@ class ThriftBackend:
             "_use_arrow_native_timestamps", True
         )
 
-        # Configure tls context
-        ssl_context = create_default_context(cafile=kwargs.get("_tls_trusted_ca_file"))
-        if kwargs.get("_tls_no_verify") is True:
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = CERT_NONE
-        elif kwargs.get("_tls_verify_hostname") is False:
-            ssl_context.check_hostname = False
-            ssl_context.verify_mode = CERT_REQUIRED
-        else:
-            ssl_context.check_hostname = True
-            ssl_context.verify_mode = CERT_REQUIRED
+        # Cloud fetch
+        self.max_download_threads = kwargs.get("max_download_threads", 10)
 
-        tls_client_cert_file = kwargs.get("_tls_client_cert_file")
-        tls_client_cert_key_file = kwargs.get("_tls_client_cert_key_file")
-        tls_client_cert_key_password = kwargs.get("_tls_client_cert_key_password")
-        if tls_client_cert_file:
-            ssl_context.load_cert_chain(
-                certfile=tls_client_cert_file,
-                keyfile=tls_client_cert_key_file,
-                password=tls_client_cert_key_password,
-            )
+        self._ssl_options = ssl_options
 
         self._auth_provider = auth_provider
+
+        # Connector version 3 retry approach
+        self.enable_v3_retries = kwargs.get("_enable_v3_retries", True)
+
+        if not self.enable_v3_retries:
+            logger.warning(
+                "Legacy retry behavior is enabled for this connection."
+                " This behaviour is deprecated and will be removed in a future release."
+            )
+        self.force_dangerous_codes = kwargs.get("_retry_dangerous_codes", [])
+
+        additional_transport_args = {}
+        _max_redirects: Union[None, int] = kwargs.get("_retry_max_redirects")
+
+        if _max_redirects:
+            if _max_redirects > self._retry_stop_after_attempts_count:
+                logger.warn(
+                    "_retry_max_redirects > _retry_stop_after_attempts_count so it will have no affect!"
+                )
+            urllib3_kwargs = {"redirect": _max_redirects}
+        else:
+            urllib3_kwargs = {}
+        if self.enable_v3_retries:
+            self.retry_policy = databricks.sql.auth.thrift_http_client.DatabricksRetryPolicy(
+                delay_min=self._retry_delay_min,
+                delay_max=self._retry_delay_max,
+                stop_after_attempts_count=self._retry_stop_after_attempts_count,
+                stop_after_attempts_duration=self._retry_stop_after_attempts_duration,
+                delay_default=self._retry_delay_default,
+                force_dangerous_codes=self.force_dangerous_codes,
+                urllib3_kwargs=urllib3_kwargs,
+            )
+
+            additional_transport_args["retry_policy"] = self.retry_policy
 
         self._transport = databricks.sql.auth.thrift_http_client.THttpClient(
             auth_provider=self._auth_provider,
             uri_or_host=uri,
-            ssl_context=ssl_context,
+            ssl_options=self._ssl_options,
+            **additional_transport_args,  # type: ignore
         )
 
-        timeout = kwargs.get("_socket_timeout")
-        # setTimeout defaults to None (i.e. no timeout), and is expected in ms
+        timeout = kwargs.get("_socket_timeout", DEFAULT_SOCKET_TIMEOUT)
+        # setTimeout defaults to 15 minutes and is expected in ms
         self._transport.setTimeout(timeout and (float(timeout) * 1000.0))
 
         self._transport.setCustomHeaders(dict(http_headers))
@@ -168,10 +217,11 @@ class ThriftBackend:
 
         self._request_lock = threading.RLock()
 
+    # TODO: Move this bounding logic into DatabricksRetryPolicy for v3 (PECO-918)
     def _initialize_retry_args(self, kwargs):
         # Configure retries & timing: use user-settings or defaults, and bound
         # by policy. Log.warn when given param gets restricted.
-        for (key, (type_, default, min, max)) in _retry_policy.items():
+        for key, (type_, default, min, max) in _retry_policy.items():
             given_or_default = type_(kwargs.get(key, default))
             bound = _bound(min, max, given_or_default)
             setattr(self, key, bound)
@@ -300,8 +350,8 @@ class ThriftBackend:
             # encapsulate retry checks, returns None || delay-in-secs
             # Retry IFF 429/503 code + Retry-After header set
             http_code = getattr(self._transport, "code", None)
-            retry_after = getattr(self._transport, "headers", {}).get("Retry-After")
-            if http_code in [429, 503] and retry_after:
+            retry_after = getattr(self._transport, "headers", {}).get("Retry-After", 1)
+            if http_code in [429, 503]:
                 # bound delay (seconds) by [min_delay*1.5^(attempt-1), max_delay]
                 return bound_retry_delay(attempt, int(retry_after))
             return None
@@ -315,10 +365,44 @@ class ThriftBackend:
 
             error, error_message, retry_delay = None, None, None
             try:
-                logger.debug("Sending request: {}".format(request))
+                this_method_name = getattr(method, "__name__")
+
+                logger.debug("Sending request: {}(<REDACTED>)".format(this_method_name))
+                unsafe_logger.debug("Sending request: {}".format(request))
+
+                # These three lines are no-ops if the v3 retry policy is not in use
+                if self.enable_v3_retries:
+                    this_command_type = CommandType.get(this_method_name)
+                    self._transport.set_retry_command_type(this_command_type)
+                    self._transport.startRetryTimer()
+
                 response = method(request)
-                logger.debug("Received response: {}".format(response))
+
+                # We need to call type(response) here because thrift doesn't implement __name__ attributes for thrift responses
+                logger.debug(
+                    "Received response: {}(<REDACTED>)".format(type(response).__name__)
+                )
+                unsafe_logger.debug("Received response: {}".format(response))
                 return response
+
+            except urllib3.exceptions.HTTPError as err:
+                # retry on timeout. Happens a lot in Azure and it is safe as data has not been sent to server yet
+
+                # TODO: don't use exception handling for GOS polling...
+
+                gos_name = TCLIServiceClient.GetOperationStatus.__name__
+                if method.__name__ == gos_name:
+                    delay_default = (
+                        self.enable_v3_retries
+                        and self.retry_policy.delay_default
+                        or self._retry_delay_default
+                    )
+                    retry_delay = bound_retry_delay(attempt, delay_default)
+                    logger.info(
+                        f"GetOperationStatus failed with HTTP error and will be retried: {str(err)}"
+                    )
+                else:
+                    raise err
             except OSError as err:
                 error = err
                 error_message = str(err)
@@ -327,11 +411,11 @@ class ThriftBackend:
                 # log.info for errors we believe are not unusual or unexpected. log.warn for
                 # for others like EEXIST, EBADF, ERANGE which are not expected in this context.
                 #
-                # I manually tested this retry behaviour using mitmweb and confirmed that 
+                # I manually tested this retry behaviour using mitmweb and confirmed that
                 # GetOperationStatus requests are retried when I forced network connection
                 # interruptions / timeouts / reconnects. See #24 for more info.
                                         # | Debian | Darwin |
-                info_errs = [           # |--------|--------|         
+                info_errs = [           # |--------|--------|
                     errno.ESHUTDOWN,    # |   32   |   32   |
                     errno.EAFNOSUPPORT, # |   97   |   47   |
                     errno.ECONNRESET,   # |   104  |   54   |
@@ -355,6 +439,10 @@ class ThriftBackend:
                 error_message = ThriftBackend._extract_error_message_from_headers(
                     getattr(self._transport, "headers", {})
                 )
+            finally:
+                # Calling `close()` here releases the active HTTP connection back to the pool
+                self._transport.close()
+
             return RequestErrorInfo(
                 error=error,
                 error_message=error_message,
@@ -464,7 +552,7 @@ class ThriftBackend:
             response = self.make_request(self._client.OpenSession, open_session_req)
             self._check_initial_namespace(catalog, schema, response)
             self._check_protocol_version(response)
-            return response.sessionHandle
+            return response
         except:
             self._transport.close()
             raise
@@ -484,7 +572,8 @@ class ThriftBackend:
                 raise ServerOperationError(
                     get_operations_resp.displayMessage,
                     {
-                        "operation-id": op_handle and op_handle.operationId.guid,
+                        "operation-id": op_handle
+                        and self.guid_to_hex_id(op_handle.operationId.guid),
                         "diagnostic-info": get_operations_resp.diagnosticInfo,
                     },
                 )
@@ -492,16 +581,20 @@ class ThriftBackend:
                 raise ServerOperationError(
                     get_operations_resp.errorMessage,
                     {
-                        "operation-id": op_handle and op_handle.operationId.guid,
+                        "operation-id": op_handle
+                        and self.guid_to_hex_id(op_handle.operationId.guid),
                         "diagnostic-info": None,
                     },
                 )
         elif get_operations_resp.operationState == ttypes.TOperationState.CLOSED_STATE:
             raise DatabaseError(
                 "Command {} unexpectedly closed server side".format(
-                    op_handle and op_handle.operationId.guid
+                    op_handle and self.guid_to_hex_id(op_handle.operationId.guid)
                 ),
-                {"operation-id": op_handle and op_handle.operationId.guid},
+                {
+                    "operation-id": op_handle
+                    and self.guid_to_hex_id(op_handle.operationId.guid)
+                },
             )
 
     def _poll_for_status(self, op_handle):
@@ -516,108 +609,14 @@ class ThriftBackend:
             (
                 arrow_table,
                 num_rows,
-            ) = ThriftBackend._convert_column_based_set_to_arrow_table(
-                t_row_set.columns, description
-            )
+            ) = convert_column_based_set_to_arrow_table(t_row_set.columns, description)
         elif t_row_set.arrowBatches is not None:
-            (
-                arrow_table,
-                num_rows,
-            ) = ThriftBackend._convert_arrow_based_set_to_arrow_table(
+            (arrow_table, num_rows,) = convert_arrow_based_set_to_arrow_table(
                 t_row_set.arrowBatches, lz4_compressed, schema_bytes
             )
         else:
             raise OperationalError("Unsupported TRowSet instance {}".format(t_row_set))
-        return self._convert_decimals_in_arrow_table(arrow_table, description), num_rows
-
-    @staticmethod
-    def _convert_decimals_in_arrow_table(table, description):
-        for (i, col) in enumerate(table.itercolumns()):
-            if description[i][1] == "decimal":
-                decimal_col = col.to_pandas().apply(
-                    lambda v: v if v is None else Decimal(v)
-                )
-                precision, scale = description[i][4], description[i][5]
-                assert scale is not None
-                assert precision is not None
-                # Spark limits decimal to a maximum scale of 38,
-                # so 128 is guaranteed to be big enough
-                dtype = pyarrow.decimal128(precision, scale)
-                col_data = pyarrow.array(decimal_col, type=dtype)
-                field = table.field(i).with_type(dtype)
-                table = table.set_column(i, field, col_data)
-        return table
-
-    @staticmethod
-    def _convert_arrow_based_set_to_arrow_table(
-        arrow_batches, lz4_compressed, schema_bytes
-    ):
-        ba = bytearray()
-        ba += schema_bytes
-        n_rows = 0
-        if lz4_compressed:
-            for arrow_batch in arrow_batches:
-                n_rows += arrow_batch.rowCount
-                ba += lz4.frame.decompress(arrow_batch.batch)
-        else:
-            for arrow_batch in arrow_batches:
-                n_rows += arrow_batch.rowCount
-                ba += arrow_batch.batch
-        arrow_table = pyarrow.ipc.open_stream(ba).read_all()
-        return arrow_table, n_rows
-
-    @staticmethod
-    def _convert_column_based_set_to_arrow_table(columns, description):
-        arrow_table = pyarrow.Table.from_arrays(
-            [ThriftBackend._convert_column_to_arrow_array(c) for c in columns],
-            # Only use the column names from the schema, the types are determined by the
-            # physical types used in column based set, as they can differ from the
-            # mapping used in _hive_schema_to_arrow_schema.
-            names=[c[0] for c in description],
-        )
-        return arrow_table, arrow_table.num_rows
-
-    @staticmethod
-    def _convert_column_to_arrow_array(t_col):
-        """
-        Return a pyarrow array from the values in a TColumn instance.
-        Note that ColumnBasedSet has no native support for complex types, so they will be converted
-        to strings server-side.
-        """
-        field_name_to_arrow_type = {
-            "boolVal": pyarrow.bool_(),
-            "byteVal": pyarrow.int8(),
-            "i16Val": pyarrow.int16(),
-            "i32Val": pyarrow.int32(),
-            "i64Val": pyarrow.int64(),
-            "doubleVal": pyarrow.float64(),
-            "stringVal": pyarrow.string(),
-            "binaryVal": pyarrow.binary(),
-        }
-        for field in field_name_to_arrow_type.keys():
-            wrapper = getattr(t_col, field)
-            if wrapper:
-                return ThriftBackend._create_arrow_array(
-                    wrapper, field_name_to_arrow_type[field]
-                )
-
-        raise OperationalError("Empty TColumn instance {}".format(t_col))
-
-    @staticmethod
-    def _create_arrow_array(t_col_value_wrapper, arrow_type):
-        result = t_col_value_wrapper.values
-        nulls = t_col_value_wrapper.nulls  # bitfield describing which values are null
-        assert isinstance(nulls, bytes)
-
-        # The number of bits in nulls can be both larger or smaller than the number of
-        # elements in result, so take the minimum of both to iterate over.
-        length = min(len(result), len(nulls) * 8)
-
-        for i in range(length):
-            if nulls[i >> 3] & ThriftBackend.BIT_MASKS[i & 0x7]:
-                result[i] = None
-
-        return pyarrow.array(result, type=arrow_type)
+        return convert_decimals_in_arrow_table(arrow_table, description), num_rows
 
     def _get_metadata_resp(self, op_handle):
         req = ttypes.TGetResultSetMetadataReq(operationHandle=op_handle)
@@ -625,6 +624,7 @@ class ThriftBackend:
 
     @staticmethod
     def _hive_schema_to_arrow_schema(t_table_schema):
+
         def map_type(t_type_entry):
             if t_type_entry.primitiveEntry:
                 return {
@@ -710,6 +710,7 @@ class ThriftBackend:
         if t_result_set_metadata_resp.resultFormat not in [
             ttypes.TSparkRowSetType.ARROW_BASED_SET,
             ttypes.TSparkRowSetType.COLUMN_BASED_SET,
+            ttypes.TSparkRowSetType.URL_BASED_SET,
         ]:
             raise OperationalError(
                 "Expected results to be in Arrow or column based format, "
@@ -729,25 +730,32 @@ class ThriftBackend:
         description = self._hive_schema_to_description(
             t_result_set_metadata_resp.schema
         )
-        schema_bytes = (
-            t_result_set_metadata_resp.arrowSchema
-            or self._hive_schema_to_arrow_schema(t_result_set_metadata_resp.schema)
-            .serialize()
-            .to_pybytes()
-        )
+
+        if pyarrow:
+            schema_bytes = (
+                    t_result_set_metadata_resp.arrowSchema
+                    or self._hive_schema_to_arrow_schema(t_result_set_metadata_resp.schema)
+                    .serialize()
+                    .to_pybytes()
+            )
+        else:
+            schema_bytes = None
+
         lz4_compressed = t_result_set_metadata_resp.lz4Compressed
         is_staging_operation = t_result_set_metadata_resp.isStagingOperation
         if direct_results and direct_results.resultSet:
             assert direct_results.resultSet.results.startRowOffset == 0
             assert direct_results.resultSetMetadata
 
-            arrow_results, n_rows = self._create_arrow_table(
-                direct_results.resultSet.results,
-                lz4_compressed,
-                schema_bytes,
-                description,
+            arrow_queue_opt = ResultSetQueueFactory.build_queue(
+                row_set_type=t_result_set_metadata_resp.resultFormat,
+                t_row_set=direct_results.resultSet.results,
+                arrow_schema_bytes=schema_bytes,
+                max_download_threads=self.max_download_threads,
+                lz4_compressed=lz4_compressed,
+                description=description,
+                ssl_options=self._ssl_options,
             )
-            arrow_queue_opt = ArrowQueue(arrow_results, n_rows, 0)
         else:
             arrow_queue_opt = None
         return ExecuteResponse(
@@ -801,7 +809,15 @@ class ThriftBackend:
                 )
 
     def execute_command(
-        self, operation, session_handle, max_rows, max_bytes, lz4_compression, cursor
+        self,
+        operation,
+        session_handle,
+        max_rows,
+        max_bytes,
+        lz4_compression,
+        cursor,
+        use_cloud_fetch=True,
+        parameters=[],
     ):
         assert session_handle is not None
 
@@ -820,14 +836,15 @@ class ThriftBackend:
             getDirectResults=ttypes.TSparkGetDirectResults(
                 maxRows=max_rows, maxBytes=max_bytes
             ),
-            canReadArrowResult=True,
+            canReadArrowResult=True if pyarrow else False,
             canDecompressLZ4Result=lz4_compression,
-            canDownloadResult=False,
+            canDownloadResult=use_cloud_fetch,
             confOverlay={
                 # We want to receive proper Timestamp arrow types.
                 "spark.thriftserver.arrowBasedRowSet.timestampAsString": "false"
             },
             useArrowNativeTypes=spark_arrow_types,
+            parameters=parameters,
         )
         resp = self.make_request(self._client.ExecuteStatement, req)
         return self._handle_execute_response(resp, cursor)
@@ -951,6 +968,7 @@ class ThriftBackend:
             maxRows=max_rows,
             maxBytes=max_bytes,
             orientation=ttypes.TFetchOrientation.FETCH_NEXT,
+            includeResultSetMetadata=True,
         )
 
         resp = self.make_request(self._client.FetchResults, req)
@@ -960,12 +978,18 @@ class ThriftBackend:
                     expected_row_start_offset, resp.results.startRowOffset
                 )
             )
-        arrow_results, n_rows = self._create_arrow_table(
-            resp.results, lz4_compressed, arrow_schema_bytes, description
-        )
-        arrow_queue = ArrowQueue(arrow_results, n_rows)
 
-        return arrow_queue, resp.hasMoreRows
+        queue = ResultSetQueueFactory.build_queue(
+            row_set_type=resp.resultSetMetadata.resultFormat,
+            t_row_set=resp.results,
+            arrow_schema_bytes=arrow_schema_bytes,
+            max_download_threads=self.max_download_threads,
+            lz4_compressed=lz4_compressed,
+            description=description,
+            ssl_options=self._ssl_options,
+        )
+
+        return queue, resp.hasMoreRows
 
     def close_command(self, op_handle):
         req = ttypes.TCloseOperationReq(operationHandle=op_handle)
@@ -973,10 +997,39 @@ class ThriftBackend:
         return resp.status
 
     def cancel_command(self, active_op_handle):
-        logger.debug("Cancelling command {}".format(active_op_handle.operationId.guid))
+        logger.debug(
+            "Cancelling command {}".format(
+                self.guid_to_hex_id(active_op_handle.operationId.guid)
+            )
+        )
         req = ttypes.TCancelOperationReq(active_op_handle)
         self.make_request(self._client.CancelOperation, req)
 
     @staticmethod
     def handle_to_id(session_handle):
         return session_handle.sessionId.guid
+
+    @staticmethod
+    def handle_to_hex_id(session_handle: TCLIService.TSessionHandle):
+        this_uuid = uuid.UUID(bytes=session_handle.sessionId.guid)
+        return str(this_uuid)
+
+    @staticmethod
+    def guid_to_hex_id(guid: bytes) -> str:
+        """Return a hexadecimal string instead of bytes
+
+        Example:
+            IN   b'\x01\xee\x1d)\xa4\x19\x1d\xb6\xa9\xc0\x8d\xf1\xfe\xbaB\xdd'
+            OUT  '01ee1d29-a419-1db6-a9c0-8df1feba42dd'
+
+        If conversion to hexadecimal fails, the original bytes are returned
+        """
+
+        this_uuid: Union[bytes, uuid.UUID]
+
+        try:
+            this_uuid = uuid.UUID(bytes=guid)
+        except Exception as e:
+            logger.debug(f"Unable to convert bytes to UUID: {bytes} -- {str(e)}")
+            this_uuid = guid
+        return str(this_uuid)
