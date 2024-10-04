@@ -30,12 +30,13 @@ try:
     import alembic
 except ImportError:
     pass
-else:
-    from alembic.ddl import DefaultImpl
-    from alembic.autogenerate import render
 
-    class DatabricksImpl(DefaultImpl):
-        __dialect__ = "databricks"
+# else:
+# TODO: below imports and DatabricksImpl class were in an else block. Testing functionality
+from alembic.ddl import DefaultImpl
+
+class DatabricksImpl(DefaultImpl):
+    __dialect__ = "databricks"
 
 
 import logging
