@@ -101,6 +101,16 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
 
         return text
 
+    def liquid_cluster_on_table(self, liquid_cluster_columns):
+        columns = liquid_cluster_columns
+
+        return """CLUSTER BY ({cols})""".format(cols=', '.join(columns))
+
+    def visit_drop_table(self, drop, **kw):
+        text = "\nDROP TABLE IF EXISTS "
+
+        return text + self.preparer.format_table(drop.element)
+
     def visit_unique_constraint(self, constraint, **kw):
         logger.warning("Databricks does not support unique constraints")
         pass
