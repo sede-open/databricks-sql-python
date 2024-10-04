@@ -17,6 +17,7 @@ class DatabricksIdentifierPreparer(compiler.IdentifierPreparer):
 
 class DatabricksDDLCompiler(compiler.DDLCompiler):
     def post_create_table(self, table):
+        print("!!!!!!!  post_create_table is hit in this run  !!!!!!!")
         post = [" USING DELTA"]
         if table.comment:
             comment = self.sql_compiler.render_literal_value(
@@ -28,6 +29,8 @@ class DatabricksDDLCompiler(compiler.DDLCompiler):
         return "\n".join(post)
 
     def visit_create_table(self, create, **kw):
+        print("!!!!!!!  visit_create_table is hit in this run  !!!!!!!")
+
         table = create.element
         preparer = self.preparer
 
